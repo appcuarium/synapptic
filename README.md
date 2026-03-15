@@ -2,7 +2,7 @@
 
 ![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue)
 ![License: MIT](https://img.shields.io/badge/license-MIT-green)
-![PyPI](https://img.shields.io/pypi/v/synapptic)
+[![PyPI](https://img.shields.io/pypi/v/synapptic?include_prereleases)](https://pypi.org/project/synapptic/)
 ![Beta](https://img.shields.io/badge/status-beta-orange)
 
 *The missing synapse between you and your AI agents.*
