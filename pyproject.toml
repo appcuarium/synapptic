@@ -1,0 +1,40 @@
+[project]
+name = "synapptic"
+version = "0.1.0b1"
+description = "The missing synapse between you and your AI agents. Learns how you work, detects what your AI gets wrong, and makes every session feel like picking up where you left off."
+requires-python = ">=3.10"
+license = "MIT"
+authors = [
+    { name = "Sorin Gheata", email = "sorin@appcuarium.com" },
+]
+readme = "README.md"
+keywords = ["ai", "agentic", "profiling", "user-model", "llm", "claude-code", "cursor", "copilot"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Quality Assurance",
+]
+dependencies = ["click>=8.0", "pyyaml>=6.0"]
+
+[project.urls]
+Homepage = "https://github.com/appcuarium/synapptic"
+Repository = "https://github.com/appcuarium/synapptic"
+Issues = "https://github.com/appcuarium/synapptic/issues"
+
+[project.scripts]
+synapptic = "synapptic.cli:cli"
+
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+synapptic = ["bundle/**/*"]
