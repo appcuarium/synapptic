@@ -1,17 +1,21 @@
-# synapptic
+<p align="center">
+  <img src="assets/banner.png" alt="synapptic - The missing synapse between you and your AI agents" width="100%">
+</p>
 
-![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue)
-![License: MIT](https://img.shields.io/badge/license-MIT-green)
-[![PyPI](https://img.shields.io/pypi/v/synapptic?include_prereleases)](https://pypi.org/project/synapptic/)
-![Beta](https://img.shields.io/badge/status-beta-orange)
-
-*The missing synapse between you and your AI agents.*
+<p align="center">
+  <img src="https://img.shields.io/badge/python-3.10+-blue" alt="Python 3.10+">
+  <img src="https://img.shields.io/badge/license-MIT-green" alt="License: MIT">
+  <a href="https://pypi.org/project/synapptic/"><img src="https://img.shields.io/pypi/v/synapptic?include_prereleases" alt="PyPI"></a>
+  <img src="https://img.shields.io/badge/status-beta-orange" alt="Beta">
+</p>
 
 **synapptic** analyzes your AI coding sessions and builds a living profile that your agent loads at the start of every conversation. Not just your preferences - it detects interaction patterns you didn't even notice: the corrections you keep making, the assumptions your AI gets wrong, the workflow quirks that matter to you but you never thought to write down.
 
-The difference between memory files you write yourself (CLAUDE.md, .cursorrules) and what synapptic generates is that you can only document what you're aware of. synapptic sees the patterns underneath - the things that cause friction without you realizing why. It watches fifty sessions and tells your AI: "this person interrupts when you over-investigate, stops reading after the second paragraph, and will lose trust if you claim something without checking the code first."
+The difference between memory files you write yourself (CLAUDE.md, .cursorrules) and what **synapptic** generates is that you can only document what you're aware of. **synapptic** sees the patterns underneath - the things that cause friction without you realizing why. It watches fifty sessions and tells your AI: "this person interrupts when you over-investigate, stops reading after the second paragraph, and will lose trust if you claim something without checking the code first."
 
 The result is simple: you stop fighting the model. You stop repeating yourself. You get back into flow - the state where you're thinking about your code, not about how to make yourself understood.
+
+Every **synapptic** install is personal. No two profiles are alike because no two developers are alike. Your profile reflects your communication style, your expertise, your frustrations, your standards. It's a fingerprint of how you work - built from your actual sessions, not from a template.
 
 ## Get started
 
@@ -22,11 +26,11 @@ synapptic install    # set up automatic session processing
 synapptic update     # analyze your existing sessions
 ```
 
-That's it. From now on, every session ends with synapptic quietly learning in the background. The next session starts smarter.
+That's it. From now on, every session ends with **synapptic** quietly learning in the background. The next session starts smarter.
 
 ## What it builds
 
-After analyzing your sessions, synapptic produces a living document with three sections:
+After analyzing your sessions, **synapptic** produces a living document with three sections:
 
 ```markdown
 ## User Archetype
@@ -66,18 +70,18 @@ This loads automatically at session start. Your AI already knows the rules befor
 
 ### Any AI coding assistant for output
 
-| Assistant | Where synapptic writes |
+| Assistant | Where **synapptic** writes |
 |-----------|----------------------|
 | **Claude Code** | `~/.claude/projects/*/memory/user_archetype.md` |
 | **Cursor** | `.cursor/rules/synapptic.mdc` |
 | **GitHub Copilot** | `.github/copilot-instructions.md` |
 | **Gemini** | `GEMINI.md` |
 
-Use one or all of them. synapptic writes to every target you configure - one command, all your tools stay in sync.
+Use one or all of them. **synapptic** writes to every target you configure - one command, all your tools stay in sync.
 
 ### Session sources
 
-synapptic currently reads session transcripts from **Claude Code** (`~/.claude/projects/*/*.jsonl`), which stores full conversation history as structured JSONL. The profile it builds from those sessions is universal - the guards, preferences, and patterns apply to any AI assistant, not just Claude.
+**synapptic** currently reads session transcripts from **Claude Code** (`~/.claude/projects/*/*.jsonl`), which stores full conversation history as structured JSONL. The profile it builds from those sessions is universal - the guards, preferences, and patterns apply to any AI assistant, not just Claude.
 
 Support for additional session sources (Cursor chat history, Copilot logs, manual transcript import) is planned.
 
@@ -99,7 +103,7 @@ Claude Code, Cursor, Copilot, Gemini - all updated
 
 ### What it looks for
 
-synapptic extracts across nine dimensions, split between who you are (global) and what goes wrong in each project:
+**synapptic** extracts across nine dimensions, split between who you are (global) and what goes wrong in each project:
 
 | | Global (follows you everywhere) | Per-project (specific to each codebase) |
 |---|--------|-------------|
@@ -111,12 +115,12 @@ Patterns that keep appearing across multiple projects automatically promote to g
 ### It gets smarter over time
 
 - **Weighted decay**: Patterns that keep appearing get stronger. Old patterns that stop appearing naturally fade. Your profile evolves as you do.
-- **Profile-aware extraction**: After the first run, synapptic sends your existing profile to the LLM so it skips known patterns and focuses on what's genuinely new. Less redundancy, lower cost.
+- **Profile-aware extraction**: After the first run, **synapptic** sends your existing profile to the LLM so it skips known patterns and focuses on what's genuinely new. Less redundancy, lower cost.
 - **Guards from day one**: When the AI makes a concrete mistake, the corresponding guard enters your profile immediately - no need to wait for it to happen twice.
 
 ## Custom extraction patterns
 
-synapptic ships with a default extraction pattern, but you can create your own - different prompts for different use cases:
+**synapptic** ships with a default extraction pattern, but you can create your own - different prompts for different use cases:
 
 ```bash
 synapptic patterns list              # see available patterns
@@ -124,7 +128,7 @@ synapptic patterns create security   # create from template
 synapptic patterns use security      # activate it
 ```
 
-Each pattern is a `prompt.md` file in `~/.synapptic/patterns/`. Edit it to focus on whatever matters to you - security practices, performance patterns, team conventions - and synapptic will extract those dimensions from your sessions.
+Each pattern is a `prompt.md` file in `~/.synapptic/patterns/`. Edit it to focus on whatever matters to you - security practices, performance patterns, team conventions - and **synapptic** will extract those dimensions from your sessions.
 
 ## Automatic background processing
 
@@ -142,7 +146,7 @@ synapptic config outputs      # choose output targets
 
 ### Profiling modes
 
-Choose what synapptic should focus on:
+Choose what **synapptic** should focus on:
 
 - **both** (default): Extracts your preferences AND identifies AI failures
 - **user**: Only your preferences, workflow, communication style
@@ -209,7 +213,7 @@ synapptic uninstall          # removes skill, hook, settings entry, generated fi
 pip uninstall synapptic
 ```
 
-synapptic only touches files it created. Your CLAUDE.md, .cursorrules, and other manually-written config files are never modified.
+**synapptic** only touches files it created. Your CLAUDE.md, .cursorrules, and other manually-written config files are never modified.
 
 ## Privacy
 
@@ -217,7 +221,7 @@ You choose where your data goes.
 
 - **100% local option.** Use Ollama or LM Studio and nothing leaves your machine. No API keys, no cloud, no network calls. Your transcripts, profile, and observations stay on your disk.
 - **Cloud option.** If you use Anthropic or OpenAI, filtered conversation text is sent to their API for analysis. Tool output and file contents are stripped by the filter, but your actual messages and the AI's responses are sent. If that's a concern, use a local model.
-- **No telemetry.** synapptic has no analytics, no tracking, no phone-home. It talks to the LLM you configure and nothing else.
+- **No telemetry.** **synapptic** has no analytics, no tracking, no phone-home. It talks to the LLM you configure and nothing else.
 
 ## Processing large session histories
 
@@ -229,11 +233,11 @@ synapptic update --limit 20    # next batch
 synapptic update               # or just run them all (takes a while)
 ```
 
-Each session takes 30-60 seconds to extract. synapptic shows progress as it goes and picks up where it left off if interrupted.
+Each session takes 30-60 seconds to extract. **synapptic** shows progress as it goes and picks up where it left off if interrupted.
 
 ## Beta notice
 
-synapptic is in active development. It works and is being used daily, but you should know:
+**synapptic** is in active development. It works and is being used daily, but you should know:
 
 - **LLM extraction is not deterministic.** The same session can produce slightly different observations on different runs. The weighted merge smooths this out over time, but individual observations may vary.
 - **Profile quality depends on your LLM.** Local models (Ollama, LM Studio) are free but may produce lower quality extractions than cloud models. Start with a cloud provider and switch to local once you're happy with the results.
@@ -242,11 +246,33 @@ synapptic is in active development. It works and is being used daily, but you sh
 
 Found a bug or have a suggestion? [Open an issue](https://github.com/appcuarium/synapptic/issues).
 
+## Contributing
+
+**synapptic** is open source and contributions are welcome.
+
+**Ideas that would make a real difference:**
+
+- **New session sources** - parsers for Cursor, Copilot, or Aider session logs
+- **New output targets** - writers for Windsurf, Cline, Continue.dev, or other tools
+- **Extraction patterns** - custom prompt.md patterns for security, performance, accessibility, or team-specific conventions
+- **Better slug derivation** - the project name detection from encoded paths could be smarter
+- **Tests** - the extraction and synthesis modules have no unit tests yet
+
+**How to contribute:**
+
+1. Fork the repo
+2. Create a branch from `develop`
+3. Make your changes
+4. Run `python -m pytest tests/` to verify nothing breaks
+5. Open a PR against `develop`
+
+If you're not sure where to start, check the [open issues](https://github.com/appcuarium/synapptic/issues) or just open one describing what you'd like to work on.
+
 ## Requirements
 
 - Python 3.10+
 - One LLM provider (Claude CLI, API key, or local model)
-- That's it. Two dependencies installed automatically (click, pyyaml).
+- Two dependencies installed automatically (click, pyyaml)
 
 ## License
 
