@@ -1,5 +1,7 @@
 """Tier 3 narrative archetype generation via configurable provider."""
 
+import sys
+
 import yaml
 
 from synapptic.config import NARRATIVE_MIN_EVIDENCE, NARRATIVE_MIN_WEIGHT
@@ -25,7 +27,8 @@ A concise narrative (300-500 words) describing who this user is:
 - Expertise, communication style, workflow patterns, values
 - Write in second person ("You are working with...")
 - Lead with the most important observations
-- Be specific — use concrete examples from evidence
+- Be specific - use concrete examples from evidence
+- If the user values both thoroughness AND speed, make this tension explicit so the AI can calibrate (e.g., "read 1-2 examples before implementing, but don't launch a multi-file investigation for simple tasks")
 
 ### Section 2: ## Guards
 A numbered list of concrete behavioral rules for Claude. These are NOT suggestions —
@@ -44,9 +47,10 @@ Rules for writing guards:
 - Phrase as imperatives, not suggestions
 - Be specific enough that Claude can mechanically follow the rule
 - Order by severity: rules that prevent user frustration first, then efficiency rules
-- Deduplicate — if two failures suggest the same guard, write one strong guard
+- Deduplicate - if two failures suggest the same guard, write one strong guard
 - Include the "why" so Claude can apply judgment in edge cases
-- Do NOT pad with generic best practices — only include guards backed by evidence
+- Do NOT pad with generic best practices - only include guards backed by evidence
+- Every "BEFORE doing X, read/check Y" guard MUST include a scope limit: how many files to read, where to look, and when to stop. "Read 1-2 existing usages in the same directory" not "read all existing usages." The user gets equally frustrated by not reading at all AND by over-investigating. Balance thoroughness with efficiency.
 
 ### Section 3: ## Known Weaknesses
 A short list (3-8 items) of Claude behavioral patterns that repeatedly caused problems
@@ -74,6 +78,13 @@ def synthesize_archetype(profile: dict, model: str = "sonnet", config: dict | No
     filtered_profile = filter_for_narrative(profile)
 
     if not filtered_profile.get("dimensions"):
+        total = sum(len(v) for v in profile.get("dimensions", {}).values())
+        if total == 0:
+            print("No observations in profile yet", file=sys.stderr)
+        else:
+            print(f"{total} observations in profile but none pass the narrative filter "
+                  f"(need evidence_count >= 2 for user dimensions, weight >= 0.5 for guards). "
+                  f"Process more sessions to reinforce patterns.", file=sys.stderr)
         return None
 
     profile_yaml = yaml.dump(

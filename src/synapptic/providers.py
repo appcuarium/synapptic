@@ -99,7 +99,7 @@ def call_llm(prompt: str, config: dict | None = None) -> str | None:
         config = load_config()
 
     provider = config.get("provider", "claude-cli")
-    model = config.get("model", "sonnet")
+    model = config.get("model") or PROVIDERS.get(provider, {}).get("default_model", "sonnet")
 
     if provider == "claude-cli":
         return call_claude_cli(prompt, model)
@@ -108,8 +108,6 @@ def call_llm(prompt: str, config: dict | None = None) -> str | None:
     elif provider in ("openai", "ollama", "lmstudio", "custom"):
         url = config.get("api_url", PROVIDERS.get(provider, {}).get("default_url", ""))
         key = config.get("api_key", "")
-        if not model or model == "sonnet":
-            model = PROVIDERS.get(provider, {}).get("default_model", model)
         return call_openai_compatible(prompt, model, url, key)
     else:
         print(f"Unknown provider: {provider}", file=sys.stderr)
@@ -137,7 +135,8 @@ def call_claude_cli(prompt: str, model: str = "sonnet") -> str | None:
         return None
 
     if result.returncode != 0:
-        print(f"claude -p error: {result.stderr[:200]}", file=sys.stderr)
+        err = result.stderr.strip() or result.stdout.strip()
+        print(f"claude -p error (exit {result.returncode}): {err[:300]}", file=sys.stderr)
         return None
 
     return result.stdout.strip()

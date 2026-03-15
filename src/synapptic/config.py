@@ -23,7 +23,7 @@ CHARS_PER_TOKEN = 4  # rough approximation
 DEFAULT_DECAY_FACTOR = 0.98
 MIN_WEIGHT_THRESHOLD = 0.1  # archive below this
 NARRATIVE_MIN_WEIGHT = 0.3  # include in archetype above this
-NARRATIVE_MIN_EVIDENCE = 2  # need this many sessions
+NARRATIVE_MIN_EVIDENCE = 1  # weight is the primary quality filter
 
 # Global promotion: observations appearing in N+ projects promote to global
 GLOBAL_PROMOTION_MIN_PROJECTS = 2

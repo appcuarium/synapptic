@@ -198,7 +198,7 @@ def promote_to_global(project_profiles: dict[str, dict], global_profile: dict) -
     return promotions
 
 
-def find_match(prefs: list[dict], observation_text: str, threshold: float = 0.8) -> int | None:
+def find_match(prefs: list[dict], observation_text: str, threshold: float = 0.7) -> int | None:
     """Find existing preference that matches the new observation.
 
     Uses SequenceMatcher for similarity. Returns index or None.

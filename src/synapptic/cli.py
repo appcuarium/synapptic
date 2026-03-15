@@ -89,8 +89,8 @@ def config_provider():
     info = PROVIDERS[provider]
     config["provider"] = provider
 
-    # Model
-    default_model = info.get("default_model", config.get("model", "sonnet"))
+    # Model - always default to the provider's recommended model
+    default_model = info.get("default_model", "sonnet")
     config["model"] = click.prompt("Model", default=default_model)
 
     # API key
@@ -466,7 +466,7 @@ def synthesize(model, project):
                 save_archetype(narrative, project_slug=None)
                 click.echo(f"  Global archetype: {len(narrative)} chars")
             else:
-                click.echo("  Global synthesis failed")
+                click.echo("  Global: skipped (see message above)")
 
     # Per-project
     slugs = [project] if project else list_projects()
@@ -478,9 +478,9 @@ def synthesize(model, project):
         narrative = do_synthesize(pp, config=llm_config)
         if narrative:
             save_archetype(narrative, project_slug=slug)
-            click.echo(f"  [{slug}] archetype: {len(narrative)} chars")
+            click.echo(f"  [{slug}]: {len(narrative)} chars")
         else:
-            click.echo(f"  [{slug}] synthesis failed")
+            click.echo(f"  [{slug}]: skipped (see message above)")
 
 
 @cli.command()
@@ -536,12 +536,11 @@ def update(model, max_tokens, project, min_lines, limit):
     if project:
         unprocessed = [sid for sid in unprocessed if transcripts[sid][1] == project]
 
+    # Sort by file size descending so the richest sessions get processed first
+    unprocessed.sort(key=lambda sid: transcripts[sid][0].stat().st_size, reverse=True)
+
     total_pending = len(unprocessed)
-    if limit and limit > 0:
-        unprocessed = unprocessed[:limit]
-        click.echo(f"Step 1: {total_pending} unprocessed sessions (processing {limit})")
-    else:
-        click.echo(f"Step 1: {total_pending} unprocessed sessions")
+    click.echo(f"Step 1: {total_pending} unprocessed sessions" + (f" (limit {limit})" if limit else ""))
 
     # Load profiles for context
     global_profile = load_profile(project_slug=None)
@@ -553,8 +552,12 @@ def update(model, max_tokens, project, min_lines, limit):
     # Step 2: Extract + route
     all_global_obs = []
     all_project_obs = {}  # slug -> list[obs]
+    extracted_count = 0
 
     for sid in unprocessed:
+        if limit and extracted_count >= limit:
+            break
+
         path, slug = transcripts[sid]
         size_mb = path.stat().st_size / 1024 / 1024
         click.echo(f"  {sid[:8]}... [{slug}] ({size_mb:.1f}MB)", nl=False)
@@ -584,6 +587,7 @@ def update(model, max_tokens, project, min_lines, limit):
         all_project_obs.setdefault(slug, []).extend(project_obs)
 
         save_observations(sid, observations, project_slug=slug)
+        extracted_count += 1
         click.echo(f" → {len(observations)} obs ({len(global_obs)}g/{len(project_obs)}p)")
 
     clear_queue()
