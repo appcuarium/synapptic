@@ -4,8 +4,8 @@
 PIDFILE="/tmp/synapptic-update.pid"
 LOGFILE="/tmp/synapptic-session-end.log"
 
-# Skip if already running
-if [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE" 2>/dev/null)" 2>/dev/null; then
+# Skip if ANY synapptic update is already running (hook or manual)
+if pgrep -f "synapptic update" >/dev/null 2>&1; then
     exit 0
 fi
 
@@ -13,7 +13,7 @@ fi
 nohup bash -c '
     echo $$ > '"$PIDFILE"'
     echo "[$(date)] Starting synapptic update" >> '"$LOGFILE"'
-    synapptic update --model sonnet --limit 5 >> '"$LOGFILE"' 2>&1
+    synapptic update --limit 5 >> '"$LOGFILE"' 2>&1
     echo "[$(date)] Exit code: $?" >> '"$LOGFILE"'
     rm -f '"$PIDFILE"'
 ' </dev/null >/dev/null 2>&1 &

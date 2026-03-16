@@ -1,6 +1,6 @@
 [project]
 name = "synapptic"
-version = "0.1.0b1"
+version = "0.1.0b2"
 description = "The missing synapse between you and your AI agents. Learns how you work, detects what your AI gets wrong, and makes every session feel like picking up where you left off."
 requires-python = ">=3.10"
 license = "MIT"
