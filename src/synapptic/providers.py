@@ -54,6 +54,14 @@ PROVIDERS = {
         "default_model": "local-model",
         "default_url": "http://localhost:1234/v1",
     },
+    "gemini": {
+        "name": "Google Gemini",
+        "description": "Gemini API (requires GEMINI_API_KEY)",
+        "requires_key": True,
+        "requires_url": False,
+        "default_model": "gemini-3.1-flash-lite-preview",
+        "default_url": "https://generativelanguage.googleapis.com/v1beta/openai",
+    },
     "custom": {
         "name": "Custom endpoint",
         "description": "Any OpenAI-compatible API endpoint",
@@ -105,7 +113,7 @@ def call_llm(prompt: str, config: dict | None = None) -> str | None:
         return call_claude_cli(prompt, model)
     elif provider == "anthropic":
         return call_anthropic(prompt, model, config.get("api_key", ""))
-    elif provider in ("openai", "ollama", "lmstudio", "custom"):
+    elif provider in ("openai", "gemini", "ollama", "lmstudio", "custom"):
         url = config.get("api_url", PROVIDERS.get(provider, {}).get("default_url", ""))
         key = config.get("api_key", "")
         return call_openai_compatible(prompt, model, url, key)
@@ -197,7 +205,7 @@ def call_openai_compatible(prompt: str, model: str, api_url: str, api_key: str =
         return None
 
     if not api_key:
-        api_key = os.environ.get("OPENAI_API_KEY", "")
+        api_key = os.environ.get("OPENAI_API_KEY") or os.environ.get("GEMINI_API_KEY", "")
 
     url = api_url.rstrip("/") + "/chat/completions"
 

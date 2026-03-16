@@ -456,17 +456,16 @@ def synthesize(model, project):
     if model:
         llm_config["model"] = model
 
-    # Global
-    if not project:
-        gp = load_profile(project_slug=None)
-        if gp.get("dimensions"):
-            click.echo("Synthesizing global archetype...")
-            narrative = do_synthesize(gp, config=llm_config)
-            if narrative:
-                save_archetype(narrative, project_slug=None)
-                click.echo(f"  Global archetype: {len(narrative)} chars")
-            else:
-                click.echo("  Global: skipped (see message above)")
+    # Global (always synthesize - it's cheap and keeps the archetype current)
+    gp = load_profile(project_slug=None)
+    if gp.get("dimensions"):
+        click.echo("Synthesizing global archetype...")
+        narrative = do_synthesize(gp, config=llm_config)
+        if narrative:
+            save_archetype(narrative, project_slug=None)
+            click.echo(f"  Global archetype: {len(narrative)} chars")
+        else:
+            click.echo("  Global: skipped (see message above)")
 
     # Per-project
     slugs = [project] if project else list_projects()
