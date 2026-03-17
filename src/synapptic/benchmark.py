@@ -291,14 +291,17 @@ def run_benchmark(
         score_with = "PASS" if with_passes > runs / 2 else "FAIL"
         score_without = "PASS" if without_passes > runs / 2 else "FAIL"
 
-        if score_with == "PASS" and score_without == "FAIL":
+        # 0/K vs 0/K means the guard can't be tested synthetically
+        if with_passes == 0 and without_passes == 0 and runs > 1:
+            classification = "untestable"
+        elif score_with == "PASS" and score_without == "FAIL":
             classification = "effective"
         elif score_with == "PASS" and score_without == "PASS":
             classification = "redundant"
         elif score_with == "FAIL" and score_without == "PASS":
             classification = "backfire"
         elif score_with == "FAIL" and score_without == "FAIL":
-            classification = "ineffective"
+            classification = "untestable" if runs > 1 else "ineffective"
         else:
             classification = "unclear"
 
@@ -338,15 +341,23 @@ def run_benchmark(
     with_pass = sum(1 for t in results["tests"] if t["with_archetype"]["score"] == "PASS")
     without_pass = sum(1 for t in results["tests"] if t["without_archetype"]["score"] == "PASS")
 
+    # Exclude untestable from pass rate calculation
+    testable = [t for t in results["tests"] if t["classification"] != "untestable"]
+    testable_total = len(testable)
+    with_pass = sum(1 for t in testable if t["with_archetype"]["score"] == "PASS")
+    without_pass = sum(1 for t in testable if t["without_archetype"]["score"] == "PASS")
+
     results["summary"] = {
         "total": total,
+        "testable": testable_total,
         "effective": counts.get("effective", 0),
         "redundant": counts.get("redundant", 0),
         "backfire": counts.get("backfire", 0),
         "ineffective": counts.get("ineffective", 0),
-        "with_pass_rate": with_pass / total,
-        "without_pass_rate": without_pass / total,
-        "delta": (with_pass - without_pass) / total,
+        "untestable": counts.get("untestable", 0),
+        "with_pass_rate": with_pass / testable_total if testable_total else 0,
+        "without_pass_rate": without_pass / testable_total if testable_total else 0,
+        "delta": (with_pass - without_pass) / testable_total if testable_total else 0,
     }
 
     return results
@@ -466,12 +477,13 @@ def format_results(results: dict) -> str:
         "",
         f"  ++ Effective (archetype saved it):  {s['effective']}",
         f"  == Redundant (both pass):           {s['redundant']}",
-        f"  -- Ineffective (both fail):         {s['ineffective']}",
+        f"  -- Ineffective (both fail):         {s.get('ineffective', 0)}",
         f"  !! Backfire (archetype made worse):  {s['backfire']}",
+        f"  ?? Untestable (needs real codebase): {s.get('untestable', 0)}",
         "",
     ]
 
-    icons = {"effective": "++", "redundant": "==", "backfire": "!!", "ineffective": "--", "unclear": "??"}
+    icons = {"effective": "++", "redundant": "==", "backfire": "!!", "ineffective": "--", "untestable": "??", "unclear": "??"}
     for t in results["tests"]:
         icon = icons.get(t["classification"], "??")
         runs = t.get("runs", 1)
