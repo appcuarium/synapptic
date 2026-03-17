@@ -16,6 +16,9 @@ This release adds `synapptic benchmark` - a personalized behavioral testing syst
 - `--rerun` flag reuses cached test cases for tracking improvement over time
 - `--seed` for reproducible test generation
 - `--verbose` shows full prompts, scenarios, and responses
+- `--seed` for reproducible tests, cached per seed for tracking over time
+- `--refresh` regenerates cached tests when archetype changes
+- Detects backfire guards (archetype makes behavior worse) and redundant guards (both pass)
 - First real measurement: +20% to +50% behavioral delta on real profiles
 
 **Hook improvements:**

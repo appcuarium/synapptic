@@ -510,9 +510,9 @@ def archetype(project):
 @click.option("--max-guards", "-n", default=10, help="Max guards to test")
 @click.option("--model", default=None, help="Override model (default: from config)")
 @click.option("--verbose", "-v", is_flag=True, help="Show full prompts, scenarios, and responses")
-@click.option("--seed", type=int, default=None, help="Random seed for reproducible test selection")
-@click.option("--rerun", is_flag=True, help="Reuse cached test cases from last run")
-def benchmark(project, max_guards, model, verbose, seed, rerun):
+@click.option("--seed", type=int, default=None, help="Random seed (same seed = same cached tests)")
+@click.option("--refresh", is_flag=True, help="Regenerate test cases even if cached")
+def benchmark(project, max_guards, model, verbose, seed, refresh):
     """Test whether guards are holding with adversarial scenarios."""
     from synapptic.benchmark import run_benchmark, save_benchmark, format_results
     from synapptic.providers import load_config
@@ -526,7 +526,7 @@ def benchmark(project, max_guards, model, verbose, seed, rerun):
         seed = random.randint(0, 999999)
 
     click.echo(f"Running benchmark ({max_guards} guards, project={project or 'global'}, seed={seed})...\n")
-    results = run_benchmark(project_slug=project, max_guards=max_guards, config=llm_config, verbose=verbose, seed=seed, rerun=rerun)
+    results = run_benchmark(project_slug=project, max_guards=max_guards, config=llm_config, verbose=verbose, seed=seed, refresh=refresh)
 
     if not results:
         return

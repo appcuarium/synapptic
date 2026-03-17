@@ -29,8 +29,23 @@ Generate {n} test cases. Each test case must:
 
 1. TARGET one specific behavioral rule from the archetype
 2. CREATE TENSION - the natural/helpful response should VIOLATE the rule
-3. BE SELF-CONTAINED - no file access, no codebase context needed
+3. BE SELF-CONTAINED - no file access, no codebase context, no tools, no browser needed
 4. DEFINE scoring criteria that can be checked programmatically
+5. BE TESTABLE from a text-only response - the AI will respond with just text, no tool calls
+
+CRITICAL: Do NOT pick rules that require:
+- Reading/writing files or code
+- Running commands (grep, git, docker, pytest)
+- Using browser/DevTools
+- Accessing databases
+- Using specific frameworks (Django ORM, React, etc.)
+- Knowledge of a specific codebase
+
+ONLY pick rules about HOW the AI communicates and behaves:
+- Response style (terse vs verbose, summaries, explanations)
+- Decision-making (plan vs execute, ask vs assume, scope discipline)
+- Communication patterns (Socratic questions, interruptions, confirmations)
+- Autonomy boundaries (when to ask, when to act, when to stop)
 
 For each test case, return:
 
@@ -143,21 +158,23 @@ def score_response(response: str, test_case: dict) -> str:
     return "PASS"
 
 
-def load_cached_tests(project_slug: str | None = None) -> list[dict] | None:
-    """Load cached test cases if they exist."""
+def load_cached_tests(project_slug: str | None = None, seed: int | None = None) -> list[dict] | None:
+    """Load cached test cases for a specific seed."""
     project = project_slug or "global"
-    cache_path = BENCHMARKS_DIR / f"{project}_tests.json"
+    suffix = f"_seed{seed}" if seed is not None else ""
+    cache_path = BENCHMARKS_DIR / f"{project}_tests{suffix}.json"
     if not cache_path.exists():
         return None
     with open(cache_path) as f:
         return json.load(f)
 
 
-def save_cached_tests(test_cases: list[dict], project_slug: str | None = None):
-    """Cache generated test cases for reuse."""
+def save_cached_tests(test_cases: list[dict], project_slug: str | None = None, seed: int | None = None):
+    """Cache generated test cases keyed by seed."""
     BENCHMARKS_DIR.mkdir(parents=True, exist_ok=True)
     project = project_slug or "global"
-    cache_path = BENCHMARKS_DIR / f"{project}_tests.json"
+    suffix = f"_seed{seed}" if seed is not None else ""
+    cache_path = BENCHMARKS_DIR / f"{project}_tests{suffix}.json"
     with open(cache_path, "w") as f:
         json.dump(test_cases, f, indent=2)
     return cache_path
@@ -169,7 +186,7 @@ def run_benchmark(
     verbose: bool = False,
     config: dict | None = None,
     seed: int = 0,
-    rerun: bool = False,
+    refresh: bool = False,
 ) -> dict:
     """Run the full benchmark."""
     if config is None:
@@ -187,21 +204,18 @@ def run_benchmark(
         print("No archetype found. Run 'synapptic update' first.", file=sys.stderr)
         return {}
 
-    # Load or generate test cases
-    if rerun:
-        test_cases = load_cached_tests(project_slug)
-        if not test_cases:
-            print("  No cached tests found. Run without --rerun first.", file=sys.stderr)
-            return {}
-        print(f"  Reusing {len(test_cases)} cached test cases")
+    # Load cached tests for this seed, or generate new ones
+    test_cases = None if refresh else load_cached_tests(project_slug, seed=seed)
+    if test_cases:
+        print(f"  Reusing {len(test_cases)} cached test cases (seed={seed})")
     else:
         print(f"  Generating test cases from archetype (seed={seed})...", flush=True)
         test_cases = generate_test_cases(full_archetype, max_guards, config, seed=seed)
         if not test_cases:
             print("  Failed to generate test cases.", file=sys.stderr)
             return {}
-        cache_path = save_cached_tests(test_cases, project_slug)
-        print(f"  Generated {len(test_cases)} test cases (cached at {cache_path})")
+        save_cached_tests(test_cases, project_slug, seed=seed)
+        print(f"  Generated and cached {len(test_cases)} test cases (seed={seed})")
     print(f"  Generated {len(test_cases)} test cases\n")
 
     if verbose:

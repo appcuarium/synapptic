@@ -135,8 +135,9 @@ Each pattern is a `prompt.md` file in `~/.synapptic/patterns/`. Edit it to focus
 How do you know the archetype actually changes anything? **synapptic** can test itself.
 
 ```bash
-synapptic benchmark -p machine-be -n 5      # generate 5 adversarial tests from your profile
-synapptic benchmark -p machine-be --rerun    # reuse same tests to track improvement
+synapptic benchmark -p machine-be -n 5            # generate 5 adversarial tests from your profile
+synapptic benchmark -p machine-be --seed 42        # same seed = same cached tests, track over time
+synapptic benchmark -p machine-be --seed 42 --refresh  # regenerate tests after profile update
 ```
 
 The benchmark reads your archetype, picks rules where the AI's default behavior conflicts with your preferences, generates adversarial scenarios that tempt the AI to break the rules, then measures what happens with and without the archetype loaded.
@@ -206,7 +207,8 @@ synapptic patterns use <name>       # activate a pattern
 
 # Benchmark
 synapptic benchmark -p <project>    # generate and run adversarial tests
-synapptic benchmark --rerun         # reuse cached tests to track improvement
+synapptic benchmark --seed 42       # reuse cached tests (same seed = same tests)
+synapptic benchmark --seed 42 --refresh  # regenerate after profile update
 synapptic benchmark -n 10 -v        # 10 tests, verbose output
 synapptic benchmark --seed 42       # reproducible test generation
 
