@@ -318,6 +318,7 @@ def exclude_guards(guard_texts: list[str], reason: str, project_slug: str | None
     """Mark guards as excluded in the profile. They stay in the data but are skipped during synthesis.
 
     reason: "backfire" or "redundant"
+    Matches by SequenceMatcher similarity OR keyword substring overlap.
     """
     from difflib import SequenceMatcher
 
@@ -331,10 +332,23 @@ def exclude_guards(guard_texts: list[str], reason: str, project_slug: str | None
         for pref in dims[dim]:
             if pref.get("excluded"):
                 continue
-            match = any(
-                SequenceMatcher(None, pref["observation"].lower(), gt.lower()).ratio() > 0.7
-                for gt in guard_texts
-            )
+            pref_lower = pref["observation"].lower()
+            match = False
+            for gt in guard_texts:
+                gt_lower = gt.lower()
+                # SequenceMatcher similarity
+                if SequenceMatcher(None, pref_lower, gt_lower).ratio() > 0.5:
+                    match = True
+                    break
+                # Extract key phrases (3+ word sequences) and check substring
+                words = gt_lower.split()
+                for i in range(len(words) - 2):
+                    phrase = " ".join(words[i:i+3])
+                    if len(phrase) > 10 and phrase in pref_lower:
+                        match = True
+                        break
+                if match:
+                    break
             if match:
                 pref["excluded"] = reason
                 excluded += 1
