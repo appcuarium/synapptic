@@ -192,6 +192,7 @@ def run_benchmark(
     config: dict | None = None,
     seed: int = 0,
     refresh: bool = False,
+    runs: int = 1,
 ) -> dict:
     """Run the full benchmark."""
     if config is None:
@@ -250,25 +251,45 @@ def run_benchmark(
     }
 
     for i, tc in enumerate(test_cases):
-        print(f"  [{i+1}/{len(test_cases)}] {tc['rule'][:70]}...", end="", flush=True)
+        guard_display = tc['rule'] if verbose else tc['rule'][:70] + "..."
+        print(f"\n  [{i+1}/{len(test_cases)}] {guard_display}", end="" if not verbose else "\n", flush=True)
 
-        # Get response WITH archetype
-        resp_with = call_llm(
-            RESPONSE_PROMPT_WITH.format(archetype=full_archetype, scenario=tc["scenario"]),
-            config=config,
-        )
-        # Get response WITHOUT archetype
-        resp_without = call_llm(
-            RESPONSE_PROMPT_WITHOUT.format(scenario=tc["scenario"]),
-            config=config,
-        )
+        with_passes = 0
+        without_passes = 0
+        last_resp_with = ""
+        last_resp_without = ""
 
-        if not resp_with or not resp_without:
+        for run in range(runs):
+            resp_with = call_llm(
+                RESPONSE_PROMPT_WITH.format(archetype=full_archetype, scenario=tc["scenario"]),
+                config=config,
+            )
+            resp_without = call_llm(
+                RESPONSE_PROMPT_WITHOUT.format(scenario=tc["scenario"]),
+                config=config,
+            )
+
+            if not resp_with or not resp_without:
+                continue
+
+            last_resp_with = resp_with
+            last_resp_without = resp_without
+
+            if score_response(resp_with, tc) == "PASS":
+                with_passes += 1
+            if score_response(resp_without, tc) == "PASS":
+                without_passes += 1
+
+            if runs > 1 and not verbose:
+                print(".", end="", flush=True)
+
+        if not last_resp_with:
             print(" response failed")
             continue
 
-        score_with = score_response(resp_with, tc)
-        score_without = score_response(resp_without, tc)
+        # Majority vote
+        score_with = "PASS" if with_passes > runs / 2 else "FAIL"
+        score_without = "PASS" if without_passes > runs / 2 else "FAIL"
 
         if score_with == "PASS" and score_without == "FAIL":
             classification = "effective"
@@ -287,18 +308,20 @@ def run_benchmark(
             "scenario": tc["scenario"],
             "tension": tc.get("tension", ""),
             "classification": classification,
-            "with_archetype": {"response": resp_with[:1000], "score": score_with},
-            "without_archetype": {"response": resp_without[:1000], "score": score_without},
+            "runs": runs,
+            "with_archetype": {"response": last_resp_with[:1000], "score": score_with, "pass_count": with_passes},
+            "without_archetype": {"response": last_resp_without[:1000], "score": score_without, "pass_count": without_passes},
         }
         results["tests"].append(test_result)
 
         icon = {"effective": "++", "redundant": "==", "backfire": "!!", "ineffective": "--"}
-        print(f" {icon.get(classification, '??')} with={score_with} without={score_without}")
+        run_info = f" ({with_passes}/{runs} vs {without_passes}/{runs})" if runs > 1 else ""
+        print(f" {icon.get(classification, '??')} with={score_with} without={score_without}{run_info}")
 
         if verbose:
             print(f"\n    Scenario: {tc['scenario']}")
-            print(f"    With archetype:\n      {resp_with[:300]}")
-            print(f"    Without:\n      {resp_without[:300]}")
+            print(f"    With archetype:\n      {last_resp_with[:300]}")
+            print(f"    Without:\n      {last_resp_without[:300]}")
             print()
 
     # Summary
@@ -451,6 +474,13 @@ def format_results(results: dict) -> str:
     icons = {"effective": "++", "redundant": "==", "backfire": "!!", "ineffective": "--", "unclear": "??"}
     for t in results["tests"]:
         icon = icons.get(t["classification"], "??")
-        lines.append(f"  {icon} [{t['with_archetype']['score']:4s}/{t['without_archetype']['score']:4s}] [{t.get('category','?')[:12]:12s}] {t['rule'][:60]}")
+        runs = t.get("runs", 1)
+        if runs > 1:
+            wp = t["with_archetype"].get("pass_count", "?")
+            wop = t["without_archetype"].get("pass_count", "?")
+            run_info = f" ({wp}/{runs} vs {wop}/{runs})"
+        else:
+            run_info = ""
+        lines.append(f"  {icon} [{t['with_archetype']['score']:4s}/{t['without_archetype']['score']:4s}]{run_info} [{t.get('category','?')[:12]:12s}] {t['rule'][:60]}")
 
     return "\n".join(lines)
