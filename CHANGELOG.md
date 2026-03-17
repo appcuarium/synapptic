@@ -19,6 +19,9 @@ This release adds `synapptic benchmark` - a personalized behavioral testing syst
 - `--seed` for reproducible tests, cached per seed for tracking over time
 - `--refresh` regenerates cached tests when archetype changes
 - Detects backfire guards (archetype makes behavior worse) and redundant guards (both pass)
+- Prompts to exclude backfire/redundant guards after benchmark (marked, never deleted)
+- `synapptic guards excluded` / `synapptic guards include` for viewing and re-including
+- Synthesis skips excluded guards when generating archetype
 - First real measurement: +20% to +50% behavioral delta on real profiles
 
 **Hook improvements:**

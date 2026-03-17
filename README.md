@@ -154,7 +154,23 @@ Benchmark: machine-be (5 tests)
   -- Ineffective (both fail):         1
 ```
 
-**Effective** means the archetype prevented a violation the baseline would have made. **Redundant** means the AI follows the rule naturally - the guard adds no value. This tells you which guards are earning their keep and which are noise.
+**Effective** means the archetype prevented a violation the baseline would have made. **Redundant** means the AI follows the rule naturally. **Backfire** means the archetype made behavior worse. This tells you which guards are earning their keep and which need to go.
+
+After the benchmark runs, **synapptic** offers to exclude guards that backfire or add no value:
+
+```
+1 guard(s) made behavior WORSE:
+  !! WHEN the user says 'I cannot do X', treat it as a BUG REPORT
+Exclude these guards from the archetype? [Y/n]
+```
+
+Excluded guards stay in the profile (never deleted) but are skipped during synthesis. You can view and re-include them anytime:
+
+```bash
+synapptic guards excluded -p machine-be    # see excluded guards with reasons
+synapptic guards include 0 -p machine-be   # re-include by index
+synapptic synthesize -p machine-be         # regenerate archetype
+```
 
 ## Automatic background processing
 
@@ -206,11 +222,14 @@ synapptic patterns create <name>    # create custom pattern
 synapptic patterns use <name>       # activate a pattern
 
 # Benchmark
-synapptic benchmark -p <project>    # generate and run adversarial tests
-synapptic benchmark --seed 42       # reuse cached tests (same seed = same tests)
+synapptic benchmark -p <project>         # generate and run adversarial tests
+synapptic benchmark --seed 42            # reuse cached tests
 synapptic benchmark --seed 42 --refresh  # regenerate after profile update
-synapptic benchmark -n 10 -v        # 10 tests, verbose output
-synapptic benchmark --seed 42       # reproducible test generation
+synapptic benchmark -n 10 -v             # 10 tests, verbose output
+
+# Guards
+synapptic guards excluded -p <project>   # view excluded guards with reasons
+synapptic guards include 0 -p <project>  # re-include by index
 
 # Maintenance
 synapptic diff                      # changes since last version
