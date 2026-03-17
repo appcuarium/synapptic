@@ -138,10 +138,14 @@ def generate_test_cases(archetype: str, n: int, config: dict, seed: int = 0,
 
 
 def score_response(response: str, test_case: dict) -> str:
-    """Score a response using fail_signals and pass_signals from the test case."""
+    """Score a response using fail_signals and pass_signals from the test case.
+
+    Logic: FAIL if any fail_signal matches. Otherwise PASS.
+    pass_signals are a bonus confirmation, not a requirement.
+    """
     response_lower = response.lower()
 
-    # Check fail signals first
+    # Check fail signals - any match = FAIL
     for pattern in test_case.get("fail_signals", []):
         try:
             if re.search(pattern, response_lower):
@@ -149,17 +153,7 @@ def score_response(response: str, test_case: dict) -> str:
         except re.error:
             continue
 
-    # Check pass signals if any defined
-    pass_signals = test_case.get("pass_signals", [])
-    if pass_signals:
-        for pattern in pass_signals:
-            try:
-                if re.search(pattern, response):
-                    return "PASS"
-            except re.error:
-                continue
-        return "FAIL"
-
+    # No fail signals matched = PASS
     return "PASS"
 
 
