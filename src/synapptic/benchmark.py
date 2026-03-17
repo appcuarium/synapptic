@@ -301,7 +301,7 @@ def run_benchmark(
         elif score_with == "FAIL" and score_without == "PASS":
             classification = "backfire"
         elif score_with == "FAIL" and score_without == "FAIL":
-            classification = "untestable" if runs > 1 else "ineffective"
+            classification = "ineffective"
         else:
             classification = "unclear"
 
