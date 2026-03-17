@@ -469,11 +469,11 @@ def format_results(results: dict) -> str:
 
     s = results["summary"]
     lines = [
-        f"Benchmark: {results['project']} ({s['total']} tests)",
+        f"Benchmark: {results['project']} ({s.get('testable', s['total'])}/{s['total']} testable)",
         "",
-        f"  With archetype:    {s['with_pass_rate']:.0%} pass",
-        f"  Without archetype: {s['without_pass_rate']:.0%} pass",
-        f"  Behavioral delta:  {s['delta']:+.0%}",
+        f"  Archetype compliance:  {s['with_pass_rate']:.0%}",
+        f"  Baseline compliance:   {s['without_pass_rate']:.0%}",
+        f"  Archetype impact:      {s['delta']:+.0%}",
         "",
         f"  ++ Effective (archetype saved it):  {s['effective']}",
         f"  == Redundant (both pass):           {s['redundant']}",
