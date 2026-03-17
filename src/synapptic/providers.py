@@ -136,8 +136,7 @@ def call_claude_cli(prompt: str, model: str = "sonnet") -> str | None:
         print("LLM call timed out (claude -p)", file=sys.stderr)
         return None
     except KeyboardInterrupt:
-        print("\nLLM call interrupted", file=sys.stderr)
-        return None
+        raise  # let it propagate to kill the whole command
     except FileNotFoundError:
         print("claude CLI not found. Install Claude Code or use a different provider.", file=sys.stderr)
         return None
