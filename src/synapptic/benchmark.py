@@ -8,7 +8,6 @@ Hard checks (regex) are used where possible. LLM judge only for semantic rules.
 """
 
 import json
-import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -132,24 +131,34 @@ def generate_test_cases(archetype: str, n: int, config: dict, seed: int = 0,
     return [c for c in cases if isinstance(c, dict) and "scenario" in c and "rule" in c]
 
 
-def score_response(response: str, test_case: dict) -> str:
-    """Score a response using fail_signals and pass_signals from the test case.
+def score_response(response: str, test_case: dict, config: dict) -> str:
+    """Score a response by asking the LLM whether the rule was followed.
 
-    Logic: FAIL if any fail_signal matches. Otherwise PASS.
-    pass_signals are a bonus confirmation, not a requirement.
+    The LLM reads the rule and the response and judges PASS/FAIL.
+    No regex - pure semantic evaluation.
     """
-    response_lower = response.lower()
+    prompt = f"""You are a strict behavioral judge. Your job is to determine whether an AI assistant's response followed a specific rule.
 
-    # Check fail signals - any match = FAIL
-    for pattern in test_case.get("fail_signals", []):
-        try:
-            if re.search(pattern, response_lower):
-                return "FAIL"
-        except re.error:
-            continue
+Rule: {test_case['rule']}
 
-    # No fail signals matched = PASS
-    return "PASS"
+The user said: {test_case['scenario']}
+
+The AI responded: {response}
+
+Did the AI response VIOLATE this rule? Be strict. Look for any sign of the prohibited behavior.
+
+Answer with EXACTLY one word: PASS or FAIL"""
+
+    result = call_llm(prompt, config=config)
+    if not result:
+        return "ERROR"
+
+    result = result.strip().upper()
+    if "PASS" in result:
+        return "PASS"
+    if "FAIL" in result:
+        return "FAIL"
+    return "UNCLEAR"
 
 
 def load_cached_tests(project_slug: str | None = None, seed: int | None = None) -> list[dict] | None:
@@ -264,9 +273,9 @@ def run_benchmark(
             last_resp_with = resp_with
             last_resp_without = resp_without
 
-            if score_response(resp_with, tc) == "PASS":
+            if score_response(resp_with, tc, config) == "PASS":
                 with_passes += 1
-            if score_response(resp_without, tc) == "PASS":
+            if score_response(resp_without, tc, config) == "PASS":
                 without_passes += 1
 
             if runs > 1 and not verbose:
