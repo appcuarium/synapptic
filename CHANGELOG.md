@@ -1,5 +1,41 @@
 # Changelog
 
+## v0.1.0b3
+
+### Behavioral benchmark + smart hook
+
+This release adds `synapptic benchmark` - a personalized behavioral testing system that measures whether your archetype actually changes AI behavior. Also significantly improves the SessionEnd hook reliability.
+
+**Benchmark (`synapptic benchmark`):**
+- Generates adversarial test cases from YOUR archetype - not a generic test suite
+- Each test creates tension where the "naturally helpful" response would violate a guard
+- Regex-based hard checks for summary suppression, planning prevention, scope discipline
+- LLM-as-judge for semantic rules that can't be pattern-matched
+- Measures behavioral delta: `P(pass|with archetype) - P(pass|without archetype)`
+- Classifies each guard: effective (archetype saved it), redundant (both pass), backfire (archetype made worse), ineffective (both fail)
+- `--rerun` flag reuses cached test cases for tracking improvement over time
+- `--seed` for reproducible test generation
+- `--verbose` shows full prompts, scenarios, and responses
+- First real measurement: +20% to +50% behavioral delta on real profiles
+
+**Hook improvements:**
+- Only processes explicitly closed sessions (filters by `reason=prompt_input_exit|clear|logout`)
+- Derives project from `transcript_path` in the hook JSON input (no `find` needed)
+- Synthesizes only global + the affected project (not all 15 projects)
+- PID file guard replaces `pgrep` (which falsely matched bash wrapper command strings)
+- `sleep 2` before checking transcript ensures `last-prompt` record is written
+
+**New provider:**
+- Google Gemini (`gemini-3.1-flash-lite-preview`) added as LLM provider
+
+**Provider system:**
+- No default provider - if unconfigured, tells user to run `synapptic init`
+- No silent fallback between providers
+- Model defaults reset when switching providers
+
+**Extraction:**
+- Transcript wrapped in `<transcript>` tags with injection guard (prevents LLM from following instructions inside the transcript)
+
 ## v0.1.0b2
 
 ### Calibration release

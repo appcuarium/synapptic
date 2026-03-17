@@ -83,10 +83,7 @@ def load_config() -> dict:
                     return data
         except (yaml.YAMLError, OSError):
             pass
-    return {
-        "provider": "claude-cli",
-        "model": "sonnet",
-    }
+    return {}
 
 
 def save_config(config: dict):
@@ -106,7 +103,10 @@ def call_llm(prompt: str, config: dict | None = None) -> str | None:
     if config is None:
         config = load_config()
 
-    provider = config.get("provider", "claude-cli")
+    provider = config.get("provider")
+    if not provider:
+        print("No provider configured. Run `synapptic init` to select one.", file=sys.stderr)
+        return None
     model = config.get("model") or PROVIDERS.get(provider, {}).get("default_model", "sonnet")
 
     if provider == "claude-cli":

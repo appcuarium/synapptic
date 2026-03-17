@@ -506,6 +506,39 @@ def archetype(project):
 
 
 @cli.command()
+@click.option("--project", "-p", help="Benchmark a specific project's guards")
+@click.option("--max-guards", "-n", default=10, help="Max guards to test")
+@click.option("--model", default=None, help="Override model (default: from config)")
+@click.option("--verbose", "-v", is_flag=True, help="Show full prompts, scenarios, and responses")
+@click.option("--seed", type=int, default=None, help="Random seed for reproducible test selection")
+@click.option("--rerun", is_flag=True, help="Reuse cached test cases from last run")
+def benchmark(project, max_guards, model, verbose, seed, rerun):
+    """Test whether guards are holding with adversarial scenarios."""
+    from synapptic.benchmark import run_benchmark, save_benchmark, format_results
+    from synapptic.providers import load_config
+
+    llm_config = load_config()
+    if model:
+        llm_config["model"] = model
+
+    if seed is None:
+        import random
+        seed = random.randint(0, 999999)
+
+    click.echo(f"Running benchmark ({max_guards} guards, project={project or 'global'}, seed={seed})...\n")
+    results = run_benchmark(project_slug=project, max_guards=max_guards, config=llm_config, verbose=verbose, seed=seed, rerun=rerun)
+
+    if not results:
+        return
+
+    click.echo()
+    click.echo(format_results(results))
+
+    path = save_benchmark(results)
+    click.echo(f"\nSaved to {path}")
+
+
+@cli.command()
 @click.option("--model", default=None, help="Override model (default: from config)")
 @click.option("--max-tokens", default=50_000, help="Max tokens per session after filtering")
 @click.option("--project", "-p", help="Only process/integrate this project")

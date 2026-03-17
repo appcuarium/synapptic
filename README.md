@@ -130,9 +130,34 @@ synapptic patterns use security      # activate it
 
 Each pattern is a `prompt.md` file in `~/.synapptic/patterns/`. Edit it to focus on whatever matters to you - security practices, performance patterns, team conventions - and **synapptic** will extract those dimensions from your sessions.
 
+## Behavioral benchmark
+
+How do you know the archetype actually changes anything? **synapptic** can test itself.
+
+```bash
+synapptic benchmark -p machine-be -n 5      # generate 5 adversarial tests from your profile
+synapptic benchmark -p machine-be --rerun    # reuse same tests to track improvement
+```
+
+The benchmark reads your archetype, picks rules where the AI's default behavior conflicts with your preferences, generates adversarial scenarios that tempt the AI to break the rules, then measures what happens with and without the archetype loaded.
+
+```
+Benchmark: machine-be (5 tests)
+
+  With archetype:    80% pass
+  Without archetype: 60% pass
+  Behavioral delta:  +20%
+
+  ++ Effective (archetype saved it):  1
+  == Redundant (both pass):           3
+  -- Ineffective (both fail):         1
+```
+
+**Effective** means the archetype prevented a violation the baseline would have made. **Redundant** means the AI follows the rule naturally - the guard adds no value. This tells you which guards are earning their keep and which are noise.
+
 ## Automatic background processing
 
-After `synapptic install`, a session-end hook runs `synapptic update` in the background every time you close a session. Fully detached - you won't notice it. If it fails (network issue, rate limit), the next session catches up automatically. Nothing is ever lost.
+After `synapptic install`, a session-end hook runs the extraction pipeline in the background when you close a session. Only processes the closed session, not active ones. Fully detached - you won't notice it. If it fails, the next session catches up automatically.
 
 ## Configuration
 
@@ -178,6 +203,12 @@ synapptic patterns list             # available extraction patterns
 synapptic patterns show <name>      # view a pattern
 synapptic patterns create <name>    # create custom pattern
 synapptic patterns use <name>       # activate a pattern
+
+# Benchmark
+synapptic benchmark -p <project>    # generate and run adversarial tests
+synapptic benchmark --rerun         # reuse cached tests to track improvement
+synapptic benchmark -n 10 -v        # 10 tests, verbose output
+synapptic benchmark --seed 42       # reproducible test generation
 
 # Maintenance
 synapptic diff                      # changes since last version
@@ -235,14 +266,21 @@ synapptic update               # or just run them all (takes a while)
 
 Each session takes 30-60 seconds to extract. **synapptic** shows progress as it goes and picks up where it left off if interrupted.
 
+## What synapptic is not
+
+**synapptic** is not a magic wand. It's only as good as the model you run it on, and the model you use it with.
+
+- **Extraction quality depends on your LLM.** A local 7B model will miss patterns that Sonnet or GPT-4o would catch. The archetype is only as insightful as the model that wrote it.
+- **Guard compliance depends on the target model.** Even with a perfect archetype, the AI you're working with may not follow every guard. Some behaviors (like suppressing summaries) fight deeply trained instincts. `synapptic benchmark` tells you which guards actually work with your model.
+- **It doesn't fix bad models.** If your coding assistant can't write correct code, knowing your preferences won't change that. **synapptic** reduces friction in the interaction, not in the model's capabilities.
+
 ## Beta notice
 
 **synapptic** is in active development. It works and is being used daily, but you should know:
 
-- **LLM extraction is not deterministic.** The same session can produce slightly different observations on different runs. The weighted merge smooths this out over time, but individual observations may vary.
-- **Profile quality depends on your LLM.** Local models (Ollama, LM Studio) are free but may produce lower quality extractions than cloud models. Start with a cloud provider and switch to local once you're happy with the results.
-- **Large session backlogs take time.** If you have hundreds of sessions, process them in batches with `--limit`. The profile stabilizes after 10-20 sessions - you don't need to process everything.
-- **The observation format may change** between versions. Your raw session transcripts are never modified, so you can always re-extract with a newer version.
+- **LLM extraction is not deterministic.** The same session can produce slightly different observations on different runs. The weighted merge smooths this out over time.
+- **Large session backlogs take time.** Use `--limit` to process in batches. The profile stabilizes after 10-20 sessions.
+- **The observation format may change** between versions. Your raw transcripts are never modified, so you can always re-extract.
 
 Found a bug or have a suggestion? [Open an issue](https://github.com/appcuarium/synapptic/issues).
 
