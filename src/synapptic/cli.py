@@ -537,6 +537,20 @@ def benchmark(project, max_guards, model, verbose, seed, refresh):
     path = save_benchmark(results)
     click.echo(f"\nSaved to {path}")
 
+    # Offer to prune backfire guards
+    backfires = [t for t in results.get("tests", []) if t["classification"] == "backfire"]
+    if backfires:
+        click.echo(f"\n{len(backfires)} guard(s) made behavior WORSE:")
+        for t in backfires:
+            click.echo(f"  !! {t['rule'][:100]}")
+        if click.confirm("\nRemove these guards from the profile?", default=True):
+            from synapptic.benchmark import remove_guards_from_profile
+            removed = remove_guards_from_profile(
+                [t["rule"] for t in backfires],
+                project_slug=project,
+            )
+            click.echo(f"  Removed {removed} guard(s). Run 'synapptic synthesize' to regenerate the archetype.")
+
 
 @cli.command()
 @click.option("--model", default=None, help="Override model (default: from config)")

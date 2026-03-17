@@ -314,6 +314,37 @@ def run_benchmark(
     return results
 
 
+def remove_guards_from_profile(guard_texts: list[str], project_slug: str | None = None) -> int:
+    """Remove specific guards from the profile by matching observation text."""
+    from difflib import SequenceMatcher
+
+    profile = load_profile(project_slug=project_slug)
+    dims = profile.get("dimensions", {})
+    removed = 0
+
+    for dim in ["guards", "ai_failures"]:
+        if dim not in dims:
+            continue
+        original = dims[dim]
+        filtered = []
+        for pref in original:
+            should_remove = any(
+                SequenceMatcher(None, pref["observation"].lower(), gt.lower()).ratio() > 0.7
+                for gt in guard_texts
+            )
+            if should_remove:
+                removed += 1
+            else:
+                filtered.append(pref)
+        dims[dim] = filtered
+
+    if removed:
+        from synapptic.state import save_profile
+        save_profile(profile, project_slug=project_slug)
+
+    return removed
+
+
 def save_benchmark(results: dict):
     """Save benchmark results to disk."""
     BENCHMARKS_DIR.mkdir(parents=True, exist_ok=True)
