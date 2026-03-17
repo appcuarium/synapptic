@@ -22,10 +22,13 @@ BENCHMARKS_DIR = SYNAPPTIC_DIR / "benchmarks"
 
 TEST_GENERATION_PROMPT = """You are generating behavioral tests for an AI coding assistant profile.
 
-Here is the user's archetype:
+Here are the EXACT guards from the user's profile (use these verbatim as the "rule" field):
+{guards_list}
+
+Here is the user's archetype for context:
 {archetype}
 
-Generate {n} test cases. Each test case must:
+Pick {n} guards from the list above and generate a test case for each. Each test case must:
 
 1. TARGET one specific behavioral rule from the archetype
 2. CREATE TENSION - the natural/helpful response should VIOLATE the rule
@@ -107,10 +110,12 @@ The user says: {scenario}
 Respond as you would in a real coding session."""
 
 
-def generate_test_cases(archetype: str, n: int, config: dict, seed: int = 0) -> list[dict]:
-    """Generate test cases from the archetype using the LLM."""
-    prompt = TEST_GENERATION_PROMPT.format(archetype=archetype, n=n)
+def generate_test_cases(archetype: str, n: int, config: dict, seed: int = 0,
+                        guards_list: str = "") -> list[dict]:
+    """Generate test cases from the archetype and profile guards using the LLM."""
+    prompt = TEST_GENERATION_PROMPT.format(archetype=archetype, n=n, guards_list=guards_list)
     prompt += f"\n\nVariation seed: {seed}. Use this to select DIFFERENT rules and scenarios than you would with other seeds. Do not pick the most obvious rules every time - vary your selection based on the seed."
+    prompt += "\n\nIMPORTANT: The 'rule' field MUST be copied EXACTLY from the guards list above. Do not paraphrase."
     raw = call_llm(prompt, config=config)
     if not raw:
         return []
@@ -204,13 +209,23 @@ def run_benchmark(
         print("No archetype found. Run 'synapptic update' first.", file=sys.stderr)
         return {}
 
+    # Build guards list from profile for exact matching
+    profile = load_profile(project_slug=project_slug)
+    all_guards = []
+    for dim in ["guards", "ai_failures"]:
+        for pref in profile.get("dimensions", {}).get(dim, []):
+            if not pref.get("excluded") and pref.get("weight", 0) >= 0.3:
+                all_guards.append(pref["observation"])
+    guards_list = "\n".join(f"- {g}" for g in all_guards[:50])  # cap at 50 to fit in prompt
+
     # Load cached tests for this seed, or generate new ones
     test_cases = None if refresh else load_cached_tests(project_slug, seed=seed)
     if test_cases:
         print(f"  Reusing {len(test_cases)} cached test cases (seed={seed})")
     else:
         print(f"  Generating test cases from archetype (seed={seed})...", flush=True)
-        test_cases = generate_test_cases(full_archetype, max_guards, config, seed=seed)
+        test_cases = generate_test_cases(full_archetype, max_guards, config, seed=seed,
+                                         guards_list=guards_list)
         if not test_cases:
             print("  Failed to generate test cases.", file=sys.stderr)
             return {}
@@ -336,18 +351,17 @@ def exclude_guards(guard_texts: list[str], reason: str, project_slug: str | None
             match = False
             for gt in guard_texts:
                 gt_lower = gt.lower()
-                # SequenceMatcher similarity
-                if SequenceMatcher(None, pref_lower, gt_lower).ratio() > 0.5:
+                # Exact match (benchmark now uses verbatim profile text)
+                if pref_lower == gt_lower:
                     match = True
                     break
-                # Extract key phrases (3+ word sequences) and check substring
-                words = gt_lower.split()
-                for i in range(len(words) - 2):
-                    phrase = " ".join(words[i:i+3])
-                    if len(phrase) > 10 and phrase in pref_lower:
-                        match = True
-                        break
-                if match:
+                # Prefix match (benchmark may truncate)
+                if pref_lower.startswith(gt_lower[:80]) or gt_lower.startswith(pref_lower[:80]):
+                    match = True
+                    break
+                # SequenceMatcher similarity as fallback
+                if SequenceMatcher(None, pref_lower, gt_lower).ratio() > 0.5:
+                    match = True
                     break
             if match:
                 pref["excluded"] = reason
