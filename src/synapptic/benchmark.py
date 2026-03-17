@@ -314,35 +314,79 @@ def run_benchmark(
     return results
 
 
-def remove_guards_from_profile(guard_texts: list[str], project_slug: str | None = None) -> int:
-    """Remove specific guards from the profile by matching observation text."""
+def exclude_guards(guard_texts: list[str], reason: str, project_slug: str | None = None) -> int:
+    """Mark guards as excluded in the profile. They stay in the data but are skipped during synthesis.
+
+    reason: "backfire" or "redundant"
+    """
     from difflib import SequenceMatcher
 
     profile = load_profile(project_slug=project_slug)
     dims = profile.get("dimensions", {})
-    removed = 0
+    excluded = 0
 
     for dim in ["guards", "ai_failures"]:
         if dim not in dims:
             continue
-        original = dims[dim]
-        filtered = []
-        for pref in original:
-            should_remove = any(
+        for pref in dims[dim]:
+            if pref.get("excluded"):
+                continue
+            match = any(
                 SequenceMatcher(None, pref["observation"].lower(), gt.lower()).ratio() > 0.7
                 for gt in guard_texts
             )
-            if should_remove:
-                removed += 1
-            else:
-                filtered.append(pref)
-        dims[dim] = filtered
+            if match:
+                pref["excluded"] = reason
+                excluded += 1
 
-    if removed:
+    if excluded:
         from synapptic.state import save_profile
         save_profile(profile, project_slug=project_slug)
 
-    return removed
+    return excluded
+
+
+def include_guards(guard_indices: list[int], project_slug: str | None = None) -> int:
+    """Re-include excluded guards by index (from list_excluded output)."""
+    profile = load_profile(project_slug=project_slug)
+    dims = profile.get("dimensions", {})
+    included = 0
+
+    all_excluded = []
+    for dim in ["guards", "ai_failures"]:
+        for pref in dims.get(dim, []):
+            if pref.get("excluded"):
+                all_excluded.append(pref)
+
+    for idx in guard_indices:
+        if 0 <= idx < len(all_excluded):
+            del all_excluded[idx]["excluded"]
+            included += 1
+
+    if included:
+        from synapptic.state import save_profile
+        save_profile(profile, project_slug=project_slug)
+
+    return included
+
+
+def list_excluded(project_slug: str | None = None) -> list[dict]:
+    """List all excluded guards with their reasons."""
+    profile = load_profile(project_slug=project_slug)
+    dims = profile.get("dimensions", {})
+
+    excluded = []
+    for dim in ["guards", "ai_failures"]:
+        for pref in dims.get(dim, []):
+            if pref.get("excluded"):
+                excluded.append({
+                    "observation": pref["observation"],
+                    "reason": pref["excluded"],
+                    "dimension": dim,
+                    "weight": pref.get("weight", 0),
+                })
+
+    return excluded
 
 
 def save_benchmark(results: dict):

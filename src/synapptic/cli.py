@@ -537,19 +537,65 @@ def benchmark(project, max_guards, model, verbose, seed, refresh):
     path = save_benchmark(results)
     click.echo(f"\nSaved to {path}")
 
-    # Offer to prune backfire guards
+    # Offer to exclude backfire guards
     backfires = [t for t in results.get("tests", []) if t["classification"] == "backfire"]
     if backfires:
         click.echo(f"\n{len(backfires)} guard(s) made behavior WORSE:")
         for t in backfires:
             click.echo(f"  !! {t['rule'][:100]}")
-        if click.confirm("\nRemove these guards from the profile?", default=True):
-            from synapptic.benchmark import remove_guards_from_profile
-            removed = remove_guards_from_profile(
-                [t["rule"] for t in backfires],
-                project_slug=project,
-            )
-            click.echo(f"  Removed {removed} guard(s). Run 'synapptic synthesize' to regenerate the archetype.")
+        if click.confirm("\nExclude these guards from the archetype?", default=True):
+            from synapptic.benchmark import exclude_guards
+            excluded = exclude_guards([t["rule"] for t in backfires], "backfire", project_slug=project)
+            click.echo(f"  Excluded {excluded} guard(s). Run 'synapptic synthesize' to regenerate.")
+
+    # Offer to exclude redundant guards
+    redundants = [t for t in results.get("tests", []) if t["classification"] == "redundant"]
+    if redundants:
+        click.echo(f"\n{len(redundants)} guard(s) are redundant (AI follows them naturally):")
+        for t in redundants:
+            click.echo(f"  == {t['rule'][:100]}")
+        if click.confirm("\nExclude these to keep the archetype lean?", default=False):
+            from synapptic.benchmark import exclude_guards
+            excluded = exclude_guards([t["rule"] for t in redundants], "redundant", project_slug=project)
+            click.echo(f"  Excluded {excluded} guard(s). Run 'synapptic synthesize' to regenerate.")
+
+
+@cli.group("guards")
+def guards_group():
+    """View and manage excluded guards."""
+    pass
+
+
+@guards_group.command("excluded")
+@click.option("--project", "-p", help="Project to check")
+def guards_excluded(project):
+    """List all excluded guards with their reasons."""
+    from synapptic.benchmark import list_excluded
+
+    excluded = list_excluded(project_slug=project)
+    if not excluded:
+        click.echo("No excluded guards.")
+        return
+
+    for i, g in enumerate(excluded):
+        click.echo(f"  {i}. [{g['reason']:9s}] {g['observation'][:90]}")
+
+    click.echo(f"\n{len(excluded)} excluded guard(s). Use 'synapptic guards include <number>' to re-include.")
+
+
+@guards_group.command("include")
+@click.argument("indices", nargs=-1, type=int)
+@click.option("--project", "-p", help="Project to modify")
+def guards_include(indices, project):
+    """Re-include excluded guards by their index number."""
+    from synapptic.benchmark import include_guards
+
+    if not indices:
+        click.echo("Specify guard indices to re-include (from 'synapptic guards excluded').")
+        return
+
+    included = include_guards(list(indices), project_slug=project)
+    click.echo(f"Re-included {included} guard(s). Run 'synapptic synthesize' to regenerate.")
 
 
 @cli.command()
