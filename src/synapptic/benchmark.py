@@ -21,6 +21,7 @@ import hashlib
 import json
 import math
 import random
+import re
 import sys
 from datetime import datetime, timezone
 from difflib import SequenceMatcher
@@ -121,7 +122,9 @@ def _line_guard_similarity(line_text: str, guard_text: str) -> float:
     line_tokens = set(line_lower.replace("-", " ").replace("*", "").replace("`", "").split()) - stop_words
     guard_tokens = set(guard_lower.replace("-", " ").replace("*", "").replace("`", "").split()) - stop_words
 
-    if len(line_tokens) >= 3:
+    # Only trust containment when line isn't trivially short relative to guard
+    # (prevents a 3-word line from false-matching a 30-word guard)
+    if len(line_tokens) >= 3 and len(guard_tokens) <= 3 * len(line_tokens):
         containment = len(line_tokens & guard_tokens) / len(line_tokens)
     else:
         containment = 0.0
@@ -158,17 +161,22 @@ def remove_guard_from_archetype(archetype: str, guard_text: str, threshold: floa
     matched_line = lines[best_idx]
     match_indent = len(matched_line) - len(matched_line.lstrip())
 
-    # Collect indices to remove: the matched line + continuation lines
+    # Collect indices to remove: the matched line + continuation lines + intervening blanks
     remove_indices = {best_idx}
     for j in range(best_idx + 1, len(lines)):
         line = lines[j]
         if not line.strip():
-            # Blank line: stop if next non-blank is at same/lesser indent
+            # Blank line within a continuation block — tentatively include
+            remove_indices.add(j)
             continue
         line_indent = len(line) - len(line.lstrip())
         if line_indent > match_indent:
             remove_indices.add(j)
         else:
+            # Hit a line at same/lesser indent — stop.
+            # Remove trailing blank lines we tentatively included.
+            while max(remove_indices) > best_idx and not lines[max(remove_indices)].strip():
+                remove_indices.discard(max(remove_indices))
             break
 
     filtered = [line for i, line in enumerate(lines) if i not in remove_indices]
@@ -592,7 +600,8 @@ def run_benchmark(
         is_control_violate = tc.get("category") == "control_violate"
         is_control = is_control_comply or is_control_violate
         label = "CTRL+" if is_control_comply else "CTRL-" if is_control_violate else f"{i+1}/{len(test_cases)}"
-        guard_display = tc['rule'] if verbose else tc['rule'][:70] + "..."
+        rule_text = tc['rule']
+        guard_display = rule_text if verbose or len(rule_text) <= 70 else rule_text[:70] + "..."
         print(f"\n  [{label}] {guard_display}", end="" if not verbose else "\n", flush=True)
 
         # Determine WITH/WITHOUT archetypes:
@@ -929,7 +938,7 @@ def list_excluded(project_slug: str | None = None) -> list[dict]:
 
 def _safe_name(s: str) -> str:
     """Sanitize a string for use in filenames."""
-    return s.replace("/", "_").replace(":", "_").replace(" ", "_")
+    return re.sub(r'[^\w\-.]', '_', s)
 
 
 def save_benchmark(results: dict):
