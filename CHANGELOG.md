@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.1.0b3
 
 ### Command rename
 
@@ -18,11 +18,11 @@ Complete rewrite of the benchmark scoring system, driven by 3 rounds of adversar
 - Warning when judge is the same model as respondent
 
 **Correct experimental design:**
-- WITH = full archetype including the tested guard
-- WITHOUT = full archetype with the tested guard removed
-- This isolates each guard's individual contribution (not archetype presence vs absence)
+- Guard in archetype: WITH = full archetype, WITHOUT = archetype minus guard (ablation)
+- Guard not in archetype: WITH = archetype + guard appended, WITHOUT = archetype as-is (additive test)
+- Isolates each guard's individual contribution regardless of whether synthesis included it
 - Guard removal handles multi-line entries (removes continuation lines at deeper indentation)
-- Guards not found in archetype are classified as "untestable" (not silently compared with identical prompts)
+- Only "guards" dimension benchmarked (ai_failures are incident descriptions, not individually testable)
 
 **Statistical rigor:**
 - Default `--runs 3` with majority vote (was 1)
@@ -72,29 +72,8 @@ Complete rewrite of the benchmark scoring system, driven by 3 rounds of adversar
 - Tests badge added to README
 - 82 tests: guard selection (15), judge response parsing (15), majority vote (6), test fidelity (5), guard dedup (5), guard removal (12), confidence intervals (5), + filter/profile tests
 
-## v0.1.0b3
+### Hook improvements
 
-### Behavioral benchmark + smart hook
-
-This release adds `synapptic benchmark` - a personalized behavioral testing system that measures whether your archetype actually changes AI behavior. Also significantly improves the SessionEnd hook reliability.
-
-**Benchmark (`synapptic benchmark`):**
-- Generates adversarial test cases from YOUR archetype - not a generic test suite
-- Each test creates tension where the "naturally helpful" response would violate a guard
-- Regex-based scoring using `fail_signals` patterns (deterministic)
-- Measures archetype impact: `P(pass|with archetype) - P(pass|without archetype)`
-- Classifies each guard: effective (archetype saved it), redundant (both pass), backfire (archetype made worse), ineffective (both fail)
-- `--seed` for test case caching — same seed + model reuses cached tests across runs
-- `--refresh` regenerates cached tests when archetype changes
-- `--runs` for majority vote scoring (reduces noise from LLM variance)
-- `--verbose` shows full prompts, scenarios, and responses
-- Detects backfire guards (archetype makes behavior worse) and redundant guards (both pass)
-- Prompts to exclude backfire/redundant guards after benchmark (marked, never deleted)
-- `synapptic guards excluded` / `synapptic guards include` for viewing and re-including
-- Synthesis skips excluded guards when generating archetype
-- First real measurement: +20% to +50% archetype impact on real profiles
-
-**Hook improvements:**
 - Only processes explicitly closed sessions (filters by `reason=prompt_input_exit|clear|logout`)
 - Derives project from `transcript_path` in the hook JSON input (no `find` needed)
 - Synthesizes only global + the affected project (not all 15 projects)
