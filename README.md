@@ -6,6 +6,7 @@
   <img src="https://img.shields.io/badge/python-3.10+-blue" alt="Python 3.10+">
   <img src="https://img.shields.io/badge/license-MIT-green" alt="License: MIT">
   <a href="https://pypi.org/project/synapptic/"><img src="https://img.shields.io/pypi/v/synapptic?include_prereleases" alt="PyPI"></a>
+  <a href="https://github.com/appcuarium/synapptic/actions/workflows/tests.yml"><img src="https://github.com/appcuarium/synapptic/actions/workflows/tests.yml/badge.svg" alt="Tests"></a>
   <img src="https://img.shields.io/badge/status-beta-orange" alt="Beta">
 </p>
 
@@ -23,7 +24,7 @@ Every **synapptic** install is personal. No two profiles are alike because no tw
 pip install synapptic
 synapptic init       # pick your LLM provider and output targets
 synapptic install    # set up automatic session processing
-synapptic update     # analyze your existing sessions
+synapptic ingest     # analyze your existing sessions
 ```
 
 That's it. From now on, every session ends with **synapptic** quietly learning in the background. The next session starts smarter.
@@ -132,31 +133,41 @@ Each pattern is a `prompt.md` file in `~/.synapptic/patterns/`. Edit it to focus
 
 ## Behavioral benchmark
 
-How do you know the archetype actually changes anything? **synapptic** can test itself.
+How do you know each guard actually changes behavior? **synapptic** tests them individually using LLM-as-judge.
 
 ```bash
-synapptic benchmark -p machine-be -n 5            # generate 5 adversarial tests from your profile
-synapptic benchmark -p machine-be --seed 42        # same seed = same cached tests, track over time
-synapptic benchmark -p machine-be --seed 42 --refresh  # regenerate tests after profile update
+synapptic benchmark -p machine-be -n 5 --seed 42     # 5 guards, deterministic selection
+synapptic benchmark -p machine-be --seed 42 --refresh # regenerate tests after profile update
+synapptic benchmark --judge-model sonnet              # separate judge model (avoids self-evaluation)
+synapptic benchmark --temperature 0 --runs 5          # deterministic responses, 5 runs per test
 ```
 
-The benchmark reads your archetype, picks rules where the AI's default behavior conflicts with your preferences, generates adversarial scenarios that tempt the AI to break the rules, then measures what happens with and without the archetype loaded.
+For each guard, the benchmark generates an adversarial scenario and compares two conditions:
+- **WITH**: full archetype including the tested guard
+- **WITHOUT**: full archetype with that guard removed
+
+This isolates each guard's individual contribution. LLM-as-judge scores both responses, 3 runs per test with majority vote.
 
 ```
-Benchmark: machine-be (5 tests)
+Benchmark: machine-be (8/10 testable, n=10)
 
-  With archetype:    80% pass
-  Without archetype: 60% pass
-  Behavioral delta:  +20%
+  Guard compliance:    75%  (95% CI: 41%–93%)*
+  Baseline compliance: 63%  (95% CI: 31%–86%)*
+  Guard impact:        +13% net (3 improved, 1 regressed)
 
-  ++ Effective (archetype saved it):  1
-  == Redundant (both pass):           3
-  -- Ineffective (both fail):         1
+  ++ Effective (guard made it pass):    3
+  == Redundant (both pass):             3
+  -- Ineffective (both fail):           1
+  !! Backfire (guard made it worse):    1
+  ?? Untestable/unclear:                2
+
+  Judge: 2 failures (2/60 = 3%) | Controls: COMPLY=OK, VIOLATE=OK
+  * CI assumes independent tests (guards may be correlated)
 ```
 
-**Effective** means the archetype prevented a violation the baseline would have made. **Redundant** means the AI follows the rule naturally. **Backfire** means the archetype made behavior worse. This tells you which guards are earning their keep and which need to go.
+**Effective** means the guard prevented a violation the baseline would have made. **Redundant** means the AI follows the rule naturally. **Backfire** means the guard made behavior worse. Two internal controls (COMPLY + VIOLATE) verify the judge isn't biased.
 
-After the benchmark runs, **synapptic** offers to exclude guards that backfire or add no value:
+After the benchmark, **synapptic** offers to exclude guards that backfire or add no value:
 
 ```
 1 guard(s) made behavior WORSE:
@@ -203,7 +214,7 @@ synapptic install                   # deploy skill + session hook
 synapptic config show               # view settings
 
 # Processing
-synapptic update                    # full pipeline (extract → merge → synthesize → write)
+synapptic ingest                    # full pipeline (extract → merge → synthesize → write)
 synapptic extract --all             # extract all unprocessed sessions
 synapptic extract -s <UUID>         # extract one session
 synapptic merge                     # merge observations into profiles
@@ -222,14 +233,26 @@ synapptic patterns create <name>    # create custom pattern
 synapptic patterns use <name>       # activate a pattern
 
 # Benchmark
-synapptic benchmark -p <project>         # generate and run adversarial tests
-synapptic benchmark --seed 42            # reuse cached tests
-synapptic benchmark --seed 42 --refresh  # regenerate after profile update
-synapptic benchmark -n 10 -v             # 10 tests, verbose output
+synapptic benchmark -p <project>                           # generate and run (uses configured model)
+synapptic benchmark --seed 42                             # deterministic guard selection + cached tests
+synapptic benchmark --seed 42 --refresh                   # regenerate tests even if cached
+synapptic benchmark --seed 42 --model qwen3-coder-next    # override model, separate cache
+synapptic benchmark --judge-model sonnet                  # separate judge (avoids self-evaluation)
+synapptic benchmark --temperature 0                       # deterministic responses
+synapptic benchmark --flush-tests                         # clear all cached test cases
+synapptic benchmark --flush-results                       # clear all results, keep test cases
+synapptic benchmark --flush-all                           # clear everything (tests + results)
+synapptic benchmark -n 10 -v --runs 5                     # 10 tests, verbose, 5 runs per test
 
 # Guards
 synapptic guards excluded -p <project>   # view excluded guards with reasons
 synapptic guards include 0 -p <project>  # re-include by index
+
+# Results
+synapptic results list                                    # view all saved results
+synapptic results list --provider ollama                  # filter by provider
+synapptic results metrics                                 # token usage stats (Ollama)
+synapptic results compare <prov1> <model1> <prov2> <model2>  # compare two models
 
 # Maintenance
 synapptic diff                      # changes since last version
@@ -254,7 +277,12 @@ synapptic uninstall                 # clean removal (asks before deleting data)
 │   │   ├── profile.yaml
 │   │   └── archetype.md
 │   └── ...
-└── profile_history/         # versioned snapshots for rollback
+├── benchmarks/              # test caches + results (single directory)
+│   ├── <project>_tests_seed42_sonnet_<hash>.json          # cached test cases (keyed by seed + model + guard hash)
+│   ├── <project>_<provider>_<model>_seed42_t0.1_<ts>.json # benchmark results
+│   └── ...
+├── profile_history/         # versioned snapshots for rollback
+└── token_metrics.jsonl      # Ollama token usage log (append-only)
 ```
 
 ## Clean uninstall
@@ -280,9 +308,9 @@ You choose where your data goes.
 If you have hundreds of sessions to process, use `--limit` to batch them:
 
 ```bash
-synapptic update --limit 10    # process 10 sessions, merge, synthesize
-synapptic update --limit 20    # next batch
-synapptic update               # or just run them all (takes a while)
+synapptic ingest --limit 10    # process 10 sessions, merge, synthesize
+synapptic ingest --limit 20    # next batch
+synapptic ingest               # or just run them all (takes a while)
 ```
 
 Each session takes 30-60 seconds to extract. **synapptic** shows progress as it goes and picks up where it left off if interrupted.
@@ -315,7 +343,7 @@ Found a bug or have a suggestion? [Open an issue](https://github.com/appcuarium/
 - **New output targets** - writers for Windsurf, Cline, Continue.dev, or other tools
 - **Extraction patterns** - custom prompt.md patterns for security, performance, accessibility, or team-specific conventions
 - **Better slug derivation** - the project name detection from encoded paths could be smarter
-- **Tests** - the extraction and synthesis modules have no unit tests yet
+- **Tests** - extraction and synthesis modules need unit tests (benchmark, filter, and profile modules are covered)
 
 **How to contribute:**
 

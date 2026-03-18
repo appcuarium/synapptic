@@ -63,6 +63,19 @@ def config_show():
         click.echo(f"API key:         ...{api_key[-8:]}")
     if api_url:
         click.echo(f"API URL:         {api_url}")
+
+    # Show Ollama settings if configured
+    if provider == "ollama":
+        num_ctx = config.get("ollama_num_ctx", "not set")
+        num_gpu = config.get("ollama_num_gpu", "not set")
+        temp = config.get("ollama_temperature", "not set")
+        top_p = config.get("ollama_top_p", "not set")
+        click.echo(f"Ollama settings:")
+        click.echo(f"  num_ctx:       {num_ctx}")
+        click.echo(f"  num_gpu:       {num_gpu}")
+        click.echo(f"  temperature:   {temp}")
+        click.echo(f"  top_p:         {top_p}")
+
     click.echo(f"Config file:     ~/.synapptic/config.yaml")
 
 
@@ -89,9 +102,32 @@ def config_provider():
     info = PROVIDERS[provider]
     config["provider"] = provider
 
-    # Model - always default to the provider's recommended model
+    # Model - show available models or prompt for custom
     default_model = info.get("default_model", "sonnet")
-    config["model"] = click.prompt("Model", default=default_model)
+    available_models = info.get("models", [])
+
+    if available_models:
+        click.echo("\nAvailable models:")
+        model_ids = [m[0] for m in available_models]
+        for i, (model_id, description) in enumerate(available_models, 1):
+            default_marker = " (default)" if model_id == default_model else ""
+            click.echo(f"  {i}. {model_id}{default_marker}")
+            click.echo(f"     {description}")
+
+        click.echo()
+        try:
+            model_choice = click.prompt(
+                "Select model",
+                type=click.IntRange(1, len(available_models)),
+                default=model_ids.index(default_model) + 1
+            )
+            config["model"] = model_ids[model_choice - 1]
+        except (ValueError, IndexError):
+            # If default model not in list, just use the first one
+            config["model"] = model_ids[0]
+    else:
+        # No predefined models, prompt for custom
+        config["model"] = click.prompt("Model", default=default_model)
 
     # API key
     if info.get("requires_key"):
@@ -140,6 +176,86 @@ def config_mode():
     click.echo(f"\nProfiling mode set: {config['profiling_mode']}")
 
 
+@config_group.command("ollama")
+def config_ollama():
+    """Configure Ollama optimization parameters (num_ctx, num_gpu, temperature, top_p)."""
+    from synapptic.providers import load_config, save_config
+
+    config = load_config()
+
+    if config.get("provider") != "ollama":
+        click.echo("Note: Ollama is not currently selected as the provider.")
+        click.echo("Set it with: synapptic config provider\n")
+
+    # Presets for different operations
+    presets = {
+        "max": {"num_ctx": 262144, "temp": 0.1, "top_p": 0.95},
+        "extraction": {"num_ctx": 131072, "temp": 0.1, "top_p": 0.95},
+        "synthesis": {"num_ctx": 65536, "temp": 0.3, "top_p": 0.9},
+        "benchmark": {"num_ctx": 65536, "temp": 0.2, "top_p": 0.9},
+        "custom": None,
+    }
+
+    click.echo("Ollama optimization presets:\n")
+    preset_names = list(presets.keys())
+    for i, name in enumerate(preset_names, 1):
+        if name != "custom":
+            p = presets[name]
+            click.echo(f"  {i}. {name:12} — ctx={p['num_ctx']:6} temp={p['temp']:.1f} top_p={p['top_p']:.2f}")
+        else:
+            click.echo(f"  {i}. {name:12} — manual configuration")
+
+    current = config.get("ollama_preset", "benchmark")
+    default_idx = preset_names.index(current) + 1 if current in preset_names else 4
+    choice = click.prompt("\nSelect preset", type=click.IntRange(1, len(preset_names)), default=default_idx)
+    preset_name = preset_names[choice - 1]
+
+    if preset_name != "custom":
+        preset = presets[preset_name]
+        config["ollama_num_ctx"] = preset["num_ctx"]
+        config["ollama_temperature"] = preset["temp"]
+        config["ollama_top_p"] = preset["top_p"]
+        config["ollama_preset"] = preset_name
+        click.echo(f"\nPreset '{preset_name}' applied")
+    else:
+        # Manual configuration
+        current_ctx = config.get("ollama_num_ctx", 65536)
+        click.echo(f"\nContext window size (num_ctx)")
+        click.echo(f"  Current: {current_ctx} tokens")
+        click.echo(f"  Max available: 262144 (256k) for M2 Max with 96GB")
+        num_ctx = click.prompt("  Set to", type=int, default=current_ctx)
+        config["ollama_num_ctx"] = num_ctx
+
+        current_temp = config.get("ollama_temperature", 0.2)
+        click.echo(f"\nTemperature (0.0=deterministic, 1.0=creative)")
+        click.echo(f"  Current: {current_temp}")
+        temperature = click.prompt("  Set to", type=float, default=current_temp)
+        config["ollama_temperature"] = temperature
+
+        current_p = config.get("ollama_top_p", 0.9)
+        click.echo(f"\nTop-p (nucleus sampling, 0.0-1.0)")
+        click.echo(f"  Current: {current_p}")
+        top_p = click.prompt("  Set to", type=float, default=current_p)
+        config["ollama_top_p"] = top_p
+        config["ollama_preset"] = "custom"
+
+    # num_gpu (always ask)
+    current_gpu = config.get("ollama_num_gpu", 99)
+    click.echo(f"\nGPU layer offload (num_gpu)")
+    click.echo(f"  Current: {current_gpu}")
+    click.echo(f"  Recommended: 99 (max, all layers on Metal GPU)")
+    num_gpu = click.prompt("  Set to", type=int, default=current_gpu)
+    config["ollama_num_gpu"] = num_gpu
+
+    save_config(config)
+    click.echo(f"\nOllama settings saved:")
+    click.echo(f"  preset:       {config.get('ollama_preset', 'custom')}")
+    click.echo(f"  num_ctx:      {config['ollama_num_ctx']}")
+    click.echo(f"  num_gpu:      {config['ollama_num_gpu']}")
+    click.echo(f"  temperature:  {config['ollama_temperature']}")
+    click.echo(f"  top_p:        {config['ollama_top_p']}")
+
+
 @config_group.command("outputs")
 def config_outputs():
     """Set output targets — where to write the archetype."""
@@ -180,7 +296,7 @@ def init_cmd(ctx):
     ctx.invoke(config_mode)
     click.echo()
     ctx.invoke(config_outputs)
-    click.echo(f"\nSetup complete. Run 'synapptic install' then 'synapptic update'.")
+    click.echo(f"\nSetup complete. Run 'synapptic install' then 'synapptic ingest'.")
 
 
 @cli.group("patterns")
@@ -508,26 +624,89 @@ def archetype(project):
 @cli.command()
 @click.option("--project", "-p", help="Benchmark a specific project's guards")
 @click.option("--max-guards", "-n", default=10, help="Max guards to test")
+@click.option("--provider", default=None, help="Override provider (default: from config)")
 @click.option("--model", default=None, help="Override model (default: from config)")
 @click.option("--verbose", "-v", is_flag=True, help="Show full prompts, scenarios, and responses")
-@click.option("--seed", type=int, default=None, help="Random seed (same seed = same cached tests)")
+@click.option("--seed", type=int, default=None, help="Cache key for test cases (reuses cached tests for same seed+model)")
 @click.option("--refresh", is_flag=True, help="Regenerate test cases even if cached")
-@click.option("--runs", default=1, type=int, help="Runs per test (majority vote, reduces noise)")
-def benchmark(project, max_guards, model, verbose, seed, refresh, runs):
+@click.option("--runs", default=3, type=int, help="Runs per test (majority vote, default=3)")
+@click.option("--flush-tests", is_flag=True, help="Clear all cached test cases and exit")
+@click.option("--flush-results", is_flag=True, help="Clear all benchmark results and exit")
+@click.option("--flush-all", is_flag=True, help="Clear all test cases AND results and exit")
+@click.option("--temperature", type=float, default=0.1, help="Temperature for response generation (0=deterministic, default=0.1)")
+@click.option("--judge-provider", default=None, help="Separate provider for LLM judge (avoids self-evaluation)")
+@click.option("--judge-model", default=None, help="Separate model for LLM judge (avoids self-evaluation)")
+def benchmark(project, max_guards, provider, model, verbose, seed, refresh, runs, flush_tests, flush_results, flush_all, temperature, judge_provider, judge_model):
     """Test whether guards are holding with adversarial scenarios."""
     from synapptic.benchmark import run_benchmark, save_benchmark, format_results
-    from synapptic.providers import load_config
+    from synapptic.providers import load_config, PROVIDERS
 
     llm_config = load_config()
+    if provider:
+        llm_config["provider"] = provider
     if model:
         llm_config["model"] = model
+
+    # Build judge config (separate from response generation)
+    j_config = dict(llm_config)
+    if judge_provider:
+        j_config["provider"] = judge_provider
+    if judge_model:
+        j_config["model"] = judge_model
+
+    # Warn if temperature is set but provider doesn't support it
+    active_provider = llm_config.get("provider", "claude-cli")
+    if active_provider == "claude-cli":
+        click.echo("  Note: claude-cli ignores --temperature. Use --provider anthropic|ollama|openai|gemini for temperature control.")
+        temperature = None
+
+    # Flush caches if requested
+    if flush_tests or flush_results or flush_all:
+        from pathlib import Path
+        from synapptic.config import SYNAPPTIC_DIR
+
+        if flush_tests or flush_all:
+            benchmarks_dir = SYNAPPTIC_DIR / "benchmarks"
+            if benchmarks_dir.exists():
+                # Clear both old format (*_tests_seed*.json) and new format (*_tests_seed*_model*.json)
+                cleared = 0
+                for f in benchmarks_dir.glob("*_tests*.json"):
+                    f.unlink()
+                    cleared += 1
+                if cleared > 0:
+                    click.echo(f"Cleared {cleared} cached test case(s).")
+
+        if flush_results or flush_all:
+            benchmarks_dir = SYNAPPTIC_DIR / "benchmarks"
+            if benchmarks_dir.exists():
+                cleared = 0
+                for f in benchmarks_dir.glob("*.json"):
+                    # Only delete benchmark result files (contain _seed and _t),
+                    # not test caches (*_tests*) or other JSON files
+                    if "_tests" in f.name:
+                        continue
+                    if "_seed" in f.name and "_t" in f.name:
+                        f.unlink()
+                        cleared += 1
+                if cleared > 0:
+                    click.echo(f"Cleared {cleared} benchmark result(s).")
+
+        # Exit after flushing - don't run benchmark
+        return
 
     if seed is None:
         import random
         seed = random.randint(0, 999999)
 
-    click.echo(f"Running benchmark ({max_guards} guards, project={project or 'global'}, seed={seed})...\n")
-    results = run_benchmark(project_slug=project, max_guards=max_guards, config=llm_config, verbose=verbose, seed=seed, refresh=refresh, runs=runs)
+    provider = llm_config.get("provider", "claude-cli")
+    model_name = llm_config.get("model", "sonnet")
+    temp_info = f", Temperature: {temperature}" if temperature is not None else ""
+    judge_info = ""
+    if judge_provider or judge_model:
+        judge_info = f"\n  Judge: {j_config.get('provider', provider)}/{j_config.get('model', model_name)}"
+    click.echo(f"Running benchmark ({max_guards} guards, project={project or 'global'}, seed={seed})")
+    click.echo(f"  Provider: {provider}, Model: {model_name}, Runs: {runs}, Refresh: {refresh}{temp_info}{judge_info}\n")
+    results = run_benchmark(project_slug=project, max_guards=max_guards, config=llm_config, verbose=verbose, seed=seed, refresh=refresh, runs=runs, temperature=temperature, judge_config=j_config)
 
     if not results:
         return
@@ -559,6 +738,184 @@ def benchmark(project, max_guards, model, verbose, seed, refresh, runs):
             from synapptic.benchmark import exclude_guards
             excluded = exclude_guards([t["rule"] for t in redundants], "redundant", project_slug=project)
             click.echo(f"  Excluded {excluded} guard(s). Run 'synapptic synthesize' to regenerate.")
+
+
+@cli.command()
+@click.option("--limit", default=20, help="Show last N token measurements")
+@click.option("--csv", is_flag=True, help="Output as CSV for analysis")
+def tokens(limit, csv):
+    """Monitor Ollama token usage across all operations."""
+    from synapptic.providers import get_token_metrics_summary, format_tokens
+    from synapptic.config import SYNAPPTIC_DIR
+    import json
+
+    metrics_file = SYNAPPTIC_DIR / "token_metrics.jsonl"
+    if not metrics_file.exists():
+        click.echo("No token metrics recorded yet. Run extractions or benchmarks with Ollama.")
+        return
+
+    # Load metrics
+    metrics_list = []
+    try:
+        with open(metrics_file) as f:
+            for line in f:
+                if line.strip():
+                    metrics_list.append(json.loads(line))
+    except Exception:
+        click.echo("Error reading token metrics.")
+        return
+
+    if not metrics_list:
+        click.echo("No metrics available.")
+        return
+
+    # Get recent metrics
+    recent = metrics_list[-limit:]
+
+    if csv:
+        # CSV output
+        click.echo("timestamp,prompt_tokens,response_tokens,total_tokens,elapsed_sec,tokens_per_sec")
+        for m in recent:
+            ts = m.get("timestamp", "")[:19]
+            click.echo(f"{ts},{m.get('prompt_tokens', 0)},{m.get('response_tokens', 0)},{m.get('total_tokens', 0)},{m.get('elapsed_sec', 0):.2f},{m.get('tokens_per_sec', 0):.2f}")
+    else:
+        # Human-readable table
+        click.echo(f"Token usage (last {len(recent)} calls):\n")
+        click.echo(f"{'Timestamp':<20} {'Prompt':>8} {'Response':>10} {'Total':>10} {'Time':>8} {'Tok/s':>8}")
+        click.echo("-" * 75)
+
+        for m in recent:
+            ts = m.get("timestamp", "")[:19]
+            prom = format_tokens(m.get("prompt_tokens", 0))
+            resp = format_tokens(m.get("response_tokens", 0))
+            tot = format_tokens(m.get("total_tokens", 0))
+            elapsed = m.get("elapsed_sec", 0)
+            tps = m.get("tokens_per_sec", 0)
+            click.echo(f"{ts:<20} {prom:>8} {resp:>10} {tot:>10} {elapsed:>7.1f}s {tps:>7.1f}")
+
+        # Summary stats
+        summary = get_token_metrics_summary(limit)
+        click.echo("-" * 75)
+        summary_prom = format_tokens(summary['total_prompt_tokens'])
+        summary_resp = format_tokens(summary['total_response_tokens'])
+        summary_tot = format_tokens(summary['total_tokens'])
+        click.echo(f"{'TOTAL':<20} {summary_prom:>8} {summary_resp:>10} {summary_tot:>10} {summary['total_time_sec']:>7.1f}s {summary['avg_tokens_per_sec']:>7.1f}")
+        click.echo(f"\nAverage: {summary['avg_tokens_per_sec']:.2f} tok/s | {summary['avg_time_per_call']:.2f}s per call")
+
+
+@cli.group("results")
+def results_group():
+    """View and compare benchmark results across models/providers."""
+    pass
+
+
+@results_group.command("list")
+@click.option("--provider", help="Filter by provider")
+@click.option("--model", help="Filter by model")
+def results_list(provider, model):
+    """List saved benchmark results."""
+    from synapptic.benchmark_results import list_benchmark_results
+
+    results = list_benchmark_results(provider, model)
+    if not results:
+        click.echo("No benchmark results found.")
+        return
+
+    click.echo(f"Found {len(results)} benchmark result(s):\n")
+    for i, r in enumerate(results, 1):
+        timestamp = r.get("timestamp", "unknown")[:19]
+        prov = r.get("provider", "?")
+        mdl = r.get("model", "?")
+        proj = r.get("project", "global")
+        seed = r.get("seed", "?")
+        temp = r.get("temperature", "?")
+        summary = r.get("summary", {})
+        total = summary.get("total", 0)
+        effective = summary.get("effective", 0)
+        delta = summary.get("delta", 0)
+        click.echo(f"  {i}. [{timestamp}] {prov:12} {mdl:25} ({proj}) seed={seed} t={temp} | {effective}/{total} effective, delta={delta:+.0%}")
+
+
+@results_group.command("metrics")
+@click.option("--limit", default=10, help="Number of recent calls to summarize")
+def results_metrics(limit):
+    """Show token metrics from Ollama calls."""
+    from synapptic.providers import get_last_ollama_metrics, get_token_metrics_summary
+
+    summary = get_token_metrics_summary(limit)
+
+    if not summary:
+        click.echo("No token metrics available. Run an extraction or benchmark first.")
+        return
+
+    click.echo(f"Token metrics (last {summary['calls']} calls):\n")
+    click.echo(f"  Total calls:         {summary['calls']}")
+    click.echo(f"  Total prompt tokens: {summary['total_prompt_tokens']:,}")
+    click.echo(f"  Total response toks: {summary['total_response_tokens']:,}")
+    click.echo(f"  Total tokens:        {summary['total_tokens']:,}")
+    click.echo(f"  Total time:          {summary['total_time_sec']:.2f}s")
+    click.echo(f"  Avg tokens/sec:      {summary['avg_tokens_per_sec']:.2f} tok/s")
+    click.echo(f"  Avg time per call:   {summary['avg_time_per_call']:.2f}s")
+
+    # Show last call detail
+    last = get_last_ollama_metrics()
+    if last:
+        click.echo(f"\nLast call detail:")
+        click.echo(f"  Prompt tokens:       {last.get('prompt_tokens', 0):,}")
+        click.echo(f"  Response tokens:     {last.get('response_tokens', 0):,}")
+        click.echo(f"  Time:                {last.get('elapsed_sec', 0):.2f}s")
+        click.echo(f"  Speed:               {last.get('tokens_per_sec', 0):.2f} tok/s")
+
+
+@results_group.command("compare")
+@click.argument("provider1")
+@click.argument("model1")
+@click.argument("provider2")
+@click.argument("model2")
+@click.option("--project", "-p", help="Filter by project")
+def results_compare(provider1, model1, provider2, model2, project):
+    """Compare benchmark results between two provider/model combinations.
+
+    Example: synapptic results compare claude-cli sonnet ollama qwen3-coder-next:q4_K_M
+    """
+    from synapptic.benchmark_results import compare_results
+
+    result = compare_results(provider1, model1, provider2, model2, project)
+
+    if "error" in result:
+        click.echo(f"Error: {result['error']}")
+        return
+
+    compared = result.get("compared", [])
+    s1 = result.get("summary1", {})
+    s2 = result.get("summary2", {})
+
+    r1 = compared[0]
+    r2 = compared[1]
+    click.echo(f"\nComparison: {provider1}/{model1} vs {provider2}/{model2}\n")
+    click.echo(f"  Model 1: {r1['provider']}/{r1['model']} ({r1['timestamp'][:19]})")
+    click.echo(f"  Model 2: {r2['provider']}/{r2['model']} ({r2['timestamp'][:19]})\n")
+
+    rate1 = s1.get("with_pass_rate", 0)
+    rate2 = s2.get("with_pass_rate", 0)
+    delta1 = s1.get("delta", 0)
+    delta2 = s2.get("delta", 0)
+    eff1 = s1.get("effective", 0)
+    eff2 = s2.get("effective", 0)
+    bf1 = s1.get("backfire", 0)
+    bf2 = s2.get("backfire", 0)
+
+    click.echo(f"  Guard compliance:  {rate1:.0%} vs {rate2:.0%}")
+    click.echo(f"  Guard impact:      {delta1:+.0%} vs {delta2:+.0%}")
+    click.echo(f"  Effective guards:  {eff1} vs {eff2}")
+    click.echo(f"  Backfire guards:   {bf1} vs {bf2}")
+
+    if rate1 > rate2:
+        click.echo(f"\n  Winner: {provider1}/{model1}")
+    elif rate2 > rate1:
+        click.echo(f"\n  Winner: {provider2}/{model2}")
+    else:
+        click.echo(f"\n  Result: Tie")
 
 
 @cli.group("guards")
@@ -605,7 +962,7 @@ def guards_include(indices, project):
 @click.option("--project", "-p", help="Only process/integrate this project")
 @click.option("--min-lines", default=20, help="Skip transcripts with fewer lines than this")
 @click.option("--limit", "-n", default=0, type=int, help="Max sessions to process (0 = all)")
-def update(model, max_tokens, project, min_lines, limit):
+def ingest(model, max_tokens, project, min_lines, limit):
     """Full pipeline: extract → merge → synthesize → integrate."""
     from synapptic.filter import filter_transcript
     from synapptic.extract import extract_observations
