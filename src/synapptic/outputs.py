@@ -44,19 +44,53 @@ def write_claude_code(archetype: str, memory_dir: Path) -> bool:
     path = memory_dir / "user_archetype.md"
     path.write_text(frontmatter + archetype)
 
-    # Ensure MEMORY.md references it
+    # Ensure MEMORY.md references it — insert near top so it's within the
+    # 200-line cutoff (Claude Code truncates MEMORY.md after line 200)
     index_path = memory_dir / "MEMORY.md"
     if index_path.exists():
         content = index_path.read_text()
+        entry = (
+            "- [user_archetype.md](./user_archetype.md) "
+            "— Auto-generated user archetype from session transcripts (synapptic)"
+        )
         if "user_archetype.md" not in content:
-            entry = (
-                "\n- [user_archetype.md](./user_archetype.md) "
-                "— Auto-generated user archetype from session transcripts (synapptic)\n"
-            )
-            if not content.endswith("\n"):
-                content += "\n"
-            content += entry
-            index_path.write_text(content)
+            # Insert after the first heading line (# ...) or at the top
+            lines = content.split("\n")
+            insert_idx = 0
+            for i, line in enumerate(lines):
+                if line.startswith("# "):
+                    insert_idx = i + 1
+                    # Skip any blank lines after the heading
+                    while insert_idx < len(lines) and not lines[insert_idx].strip():
+                        insert_idx += 1
+                    break
+            lines.insert(insert_idx, entry)
+            lines.insert(insert_idx + 1, "")
+            index_path.write_text("\n".join(lines))
+        else:
+            # Already referenced — move it to the top if it's past line 200
+            lines = content.split("\n")
+            old_idx = None
+            for i, line in enumerate(lines):
+                if "user_archetype.md" in line:
+                    old_idx = i
+                    break
+            if old_idx is not None and old_idx >= 200:
+                lines.pop(old_idx)
+                # Remove trailing blank line if it was there
+                if old_idx < len(lines) and not lines[old_idx].strip():
+                    lines.pop(old_idx)
+                # Insert after first heading
+                insert_idx = 0
+                for i, line in enumerate(lines):
+                    if line.startswith("# "):
+                        insert_idx = i + 1
+                        while insert_idx < len(lines) and not lines[insert_idx].strip():
+                            insert_idx += 1
+                        break
+                lines.insert(insert_idx, entry)
+                lines.insert(insert_idx + 1, "")
+                index_path.write_text("\n".join(lines))
 
     return True
 

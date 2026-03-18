@@ -6,6 +6,7 @@
   <img src="https://img.shields.io/badge/python-3.10+-blue" alt="Python 3.10+">
   <img src="https://img.shields.io/badge/license-MIT-green" alt="License: MIT">
   <a href="https://pypi.org/project/synapptic/"><img src="https://img.shields.io/pypi/v/synapptic?include_prereleases" alt="PyPI"></a>
+  <a href="https://github.com/appcuarium/synapptic/actions/workflows/tests.yml"><img src="https://github.com/appcuarium/synapptic/actions/workflows/tests.yml/badge.svg" alt="Tests"></a>
   <img src="https://img.shields.io/badge/status-beta-orange" alt="Beta">
 </p>
 
@@ -23,7 +24,7 @@ Every **synapptic** install is personal. No two profiles are alike because no tw
 pip install synapptic
 synapptic init       # pick your LLM provider and output targets
 synapptic install    # set up automatic session processing
-synapptic update     # analyze your existing sessions
+synapptic ingest     # analyze your existing sessions
 ```
 
 That's it. From now on, every session ends with **synapptic** quietly learning in the background. The next session starts smarter.
@@ -130,9 +131,61 @@ synapptic patterns use security      # activate it
 
 Each pattern is a `prompt.md` file in `~/.synapptic/patterns/`. Edit it to focus on whatever matters to you - security practices, performance patterns, team conventions - and **synapptic** will extract those dimensions from your sessions.
 
+## Behavioral benchmark
+
+How do you know each guard actually changes behavior? **synapptic** tests them individually using LLM-as-judge.
+
+```bash
+synapptic benchmark -p machine-be -n 5 --seed 42     # 5 guards, deterministic selection
+synapptic benchmark -p machine-be --seed 42 --refresh # regenerate tests after profile update
+synapptic benchmark --judge-model sonnet              # separate judge model (avoids self-evaluation)
+synapptic benchmark --temperature 0 --runs 5          # deterministic responses, 5 runs per test
+```
+
+For each guard, the benchmark generates an adversarial scenario and compares two conditions:
+- **WITH**: full archetype including the tested guard
+- **WITHOUT**: full archetype with that guard removed
+
+This isolates each guard's individual contribution. LLM-as-judge scores both responses, 3 runs per test with majority vote.
+
+```
+Benchmark: machine-be (8/10 testable, n=10)
+
+  Guard compliance:    75%  (95% CI: 41%–93%)*
+  Baseline compliance: 63%  (95% CI: 31%–86%)*
+  Guard impact:        +13% net (3 improved, 1 regressed)
+
+  ++ Effective (guard made it pass):    3
+  == Redundant (both pass):             3
+  -- Ineffective (both fail):           1
+  !! Backfire (guard made it worse):    1
+  ?? Untestable/unclear:                2
+
+  Judge: 2 failures (2/60 = 3%) | Controls: COMPLY=OK, VIOLATE=OK
+  * CI assumes independent tests (guards may be correlated)
+```
+
+**Effective** means the guard prevented a violation the baseline would have made. **Redundant** means the AI follows the rule naturally. **Backfire** means the guard made behavior worse. Two internal controls (COMPLY + VIOLATE) verify the judge isn't biased.
+
+After the benchmark, **synapptic** offers to exclude guards that backfire or add no value:
+
+```
+1 guard(s) made behavior WORSE:
+  !! WHEN the user says 'I cannot do X', treat it as a BUG REPORT
+Exclude these guards from the archetype? [Y/n]
+```
+
+Excluded guards stay in the profile (never deleted) but are skipped during synthesis. You can view and re-include them anytime:
+
+```bash
+synapptic guards excluded -p machine-be    # see excluded guards with reasons
+synapptic guards include 0 -p machine-be   # re-include by index
+synapptic synthesize -p machine-be         # regenerate archetype
+```
+
 ## Automatic background processing
 
-After `synapptic install`, a session-end hook runs `synapptic update` in the background every time you close a session. Fully detached - you won't notice it. If it fails (network issue, rate limit), the next session catches up automatically. Nothing is ever lost.
+After `synapptic install`, a session-end hook runs the extraction pipeline in the background when you close a session. Only processes the closed session, not active ones. Fully detached - you won't notice it. If it fails, the next session catches up automatically.
 
 ## Configuration
 
@@ -161,7 +214,7 @@ synapptic install                   # deploy skill + session hook
 synapptic config show               # view settings
 
 # Processing
-synapptic update                    # full pipeline (extract → merge → synthesize → write)
+synapptic ingest                    # full pipeline (extract → merge → synthesize → write)
 synapptic extract --all             # extract all unprocessed sessions
 synapptic extract -s <UUID>         # extract one session
 synapptic merge                     # merge observations into profiles
@@ -178,6 +231,28 @@ synapptic patterns list             # available extraction patterns
 synapptic patterns show <name>      # view a pattern
 synapptic patterns create <name>    # create custom pattern
 synapptic patterns use <name>       # activate a pattern
+
+# Benchmark
+synapptic benchmark -p <project>                           # generate and run (uses configured model)
+synapptic benchmark --seed 42                             # deterministic guard selection + cached tests
+synapptic benchmark --seed 42 --refresh                   # regenerate tests even if cached
+synapptic benchmark --seed 42 --model qwen3-coder-next    # override model, separate cache
+synapptic benchmark --judge-model sonnet                  # separate judge (avoids self-evaluation)
+synapptic benchmark --temperature 0                       # deterministic responses
+synapptic benchmark --flush-tests                         # clear all cached test cases
+synapptic benchmark --flush-results                       # clear all results, keep test cases
+synapptic benchmark --flush-all                           # clear everything (tests + results)
+synapptic benchmark -n 10 -v --runs 5                     # 10 tests, verbose, 5 runs per test
+
+# Guards
+synapptic guards excluded -p <project>   # view excluded guards with reasons
+synapptic guards include 0 -p <project>  # re-include by index
+
+# Results
+synapptic results list                                    # view all saved results
+synapptic results list --provider ollama                  # filter by provider
+synapptic results metrics                                 # token usage stats (Ollama)
+synapptic results compare <prov1> <model1> <prov2> <model2>  # compare two models
 
 # Maintenance
 synapptic diff                      # changes since last version
@@ -202,7 +277,12 @@ synapptic uninstall                 # clean removal (asks before deleting data)
 │   │   ├── profile.yaml
 │   │   └── archetype.md
 │   └── ...
-└── profile_history/         # versioned snapshots for rollback
+├── benchmarks/              # test caches + results (single directory)
+│   ├── <project>_tests_seed42_sonnet_<hash>.json          # cached test cases (keyed by seed + model + guard hash)
+│   ├── <project>_<provider>_<model>_seed42_t0.1_<ts>.json # benchmark results
+│   └── ...
+├── profile_history/         # versioned snapshots for rollback
+└── token_metrics.jsonl      # Ollama token usage log (append-only)
 ```
 
 ## Clean uninstall
@@ -228,21 +308,28 @@ You choose where your data goes.
 If you have hundreds of sessions to process, use `--limit` to batch them:
 
 ```bash
-synapptic update --limit 10    # process 10 sessions, merge, synthesize
-synapptic update --limit 20    # next batch
-synapptic update               # or just run them all (takes a while)
+synapptic ingest --limit 10    # process 10 sessions, merge, synthesize
+synapptic ingest --limit 20    # next batch
+synapptic ingest               # or just run them all (takes a while)
 ```
 
 Each session takes 30-60 seconds to extract. **synapptic** shows progress as it goes and picks up where it left off if interrupted.
+
+## What synapptic is not
+
+**synapptic** is not a magic wand. It's only as good as the model you run it on, and the model you use it with.
+
+- **Extraction quality depends on your LLM.** A local 7B model will miss patterns that Sonnet or GPT-4o would catch. The archetype is only as insightful as the model that wrote it.
+- **Guard compliance depends on the target model.** Even with a perfect archetype, the AI you're working with may not follow every guard. Some behaviors (like suppressing summaries) fight deeply trained instincts. `synapptic benchmark` tells you which guards actually work with your model.
+- **It doesn't fix bad models.** If your coding assistant can't write correct code, knowing your preferences won't change that. **synapptic** reduces friction in the interaction, not in the model's capabilities.
 
 ## Beta notice
 
 **synapptic** is in active development. It works and is being used daily, but you should know:
 
-- **LLM extraction is not deterministic.** The same session can produce slightly different observations on different runs. The weighted merge smooths this out over time, but individual observations may vary.
-- **Profile quality depends on your LLM.** Local models (Ollama, LM Studio) are free but may produce lower quality extractions than cloud models. Start with a cloud provider and switch to local once you're happy with the results.
-- **Large session backlogs take time.** If you have hundreds of sessions, process them in batches with `--limit`. The profile stabilizes after 10-20 sessions - you don't need to process everything.
-- **The observation format may change** between versions. Your raw session transcripts are never modified, so you can always re-extract with a newer version.
+- **LLM extraction is not deterministic.** The same session can produce slightly different observations on different runs. The weighted merge smooths this out over time.
+- **Large session backlogs take time.** Use `--limit` to process in batches. The profile stabilizes after 10-20 sessions.
+- **The observation format may change** between versions. Your raw transcripts are never modified, so you can always re-extract.
 
 Found a bug or have a suggestion? [Open an issue](https://github.com/appcuarium/synapptic/issues).
 
@@ -256,7 +343,7 @@ Found a bug or have a suggestion? [Open an issue](https://github.com/appcuarium/
 - **New output targets** - writers for Windsurf, Cline, Continue.dev, or other tools
 - **Extraction patterns** - custom prompt.md patterns for security, performance, accessibility, or team-specific conventions
 - **Better slug derivation** - the project name detection from encoded paths could be smarter
-- **Tests** - the extraction and synthesis modules have no unit tests yet
+- **Tests** - extraction and synthesis modules need unit tests (benchmark, filter, and profile modules are covered)
 
 **How to contribute:**
 

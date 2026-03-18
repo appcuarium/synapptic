@@ -12,7 +12,7 @@ The missing feedback loop for agentic development. Builds a living user model fr
 ### Full pipeline (most common)
 
 ```bash
-synapptic update                    # extract → merge → synthesize → integrate
+synapptic ingest                    # extract → merge → synthesize → integrate
 ```
 
 Finds unprocessed transcripts, filters them (~626x compression), extracts observations via LLM, merges into weighted profiles, synthesizes narrative archetypes, and writes to all project memory directories.
@@ -90,7 +90,7 @@ Session transcripts can be 500MB+. The filter reduces them to ~50K tokens (~626x
 
 ## SessionEnd hook
 
-A hook runs `synapptic update` in the background after every session (fully detached, zero exit lag). PID-locked to prevent stacking. If it fails, the next session's hook catches up — nothing is permanently lost.
+A hook runs `synapptic ingest` in the background after every session (fully detached, zero exit lag). PID-locked to prevent stacking. If it fails, the next session's hook catches up — nothing is permanently lost.
 
 ## Guards
 

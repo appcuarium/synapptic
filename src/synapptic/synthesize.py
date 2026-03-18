@@ -126,16 +126,17 @@ def filter_for_narrative(profile: dict) -> dict:
     prescriptive_dims = {"guards", "ai_failures"}
 
     for dim_name, prefs in dimensions.items():
+        # Skip excluded guards (marked by benchmark)
+        active_prefs = [p for p in prefs if not p.get("excluded")]
+
         if dim_name in prescriptive_dims:
-            # For guards/failures: include if weight >= 0.5 (no evidence_count gate)
             strong_prefs = [
-                p for p in prefs
+                p for p in active_prefs
                 if p.get("weight", 0) >= 0.5
             ]
         else:
-            # For profile dimensions: require multiple sessions of evidence
             strong_prefs = [
-                p for p in prefs
+                p for p in active_prefs
                 if p.get("weight", 0) >= NARRATIVE_MIN_WEIGHT
                 and p.get("evidence_count", 0) >= NARRATIVE_MIN_EVIDENCE
             ]

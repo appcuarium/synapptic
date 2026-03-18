@@ -8,6 +8,7 @@ SYNAPPTIC_DIR = Path.home() / ".synapptic"
 GLOBAL_DIR = SYNAPPTIC_DIR / "global"
 PROJECTS_DIR = SYNAPPTIC_DIR / "projects"
 PROFILE_HISTORY_DIR = SYNAPPTIC_DIR / "profile_history"
+BENCHMARK_RESULTS_DIR = SYNAPPTIC_DIR / "benchmark_results"
 CONFIG_PATH = SYNAPPTIC_DIR / "config.yaml"
 QUEUE_PATH = SYNAPPTIC_DIR / "queue.txt"
 
