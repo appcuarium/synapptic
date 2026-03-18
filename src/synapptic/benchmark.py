@@ -7,9 +7,10 @@ with-guard and without-guard responses.
 LLM-as-judge scores responses for behavioral compliance.
 
 Experimental design:
-  - WITH condition: full archetype including the tested guard
-  - WITHOUT condition: full archetype with the tested guard removed
-  - This isolates the guard's contribution (not archetype presence vs absence)
+  - WITHOUT condition: full archetype as-is (baseline)
+  - WITH condition: full archetype + the tested guard appended
+  - If the guard is already in the archetype, it's removed from the WITHOUT condition instead
+  - This isolates each guard's individual contribution
 
 Note: seed controls guard selection and order randomization but NOT LLM sampling.
 At temperature > 0, responses will vary between runs even with the same seed.
@@ -101,27 +102,56 @@ CONTROL_VIOLATE = {
 }
 
 
-def remove_guard_from_archetype(archetype: str, guard_text: str, threshold: float = 0.6) -> str:
+def _line_guard_similarity(line_text: str, guard_text: str) -> float:
+    """Score how well an archetype line matches a guard observation.
+
+    Uses the max of:
+    - SequenceMatcher ratio (good for similar-length strings)
+    - Token containment: fraction of the line's key words found in the guard
+      (good when the guard is a verbose observation and the line is a short rule)
+    """
+    line_lower = line_text.lower()
+    guard_lower = guard_text.lower()
+
+    seq_ratio = SequenceMatcher(None, line_lower, guard_lower).ratio()
+
+    # Token containment: how many of the line's words appear in the guard?
+    # Strip common markdown/formatting tokens
+    stop_words = {"the", "a", "an", "is", "in", "to", "of", "and", "or", "for", "on", "with", "this", "that", "it", "be", "as", "at", "by", "not", "do", "if"}
+    line_tokens = set(line_lower.replace("-", " ").replace("*", "").replace("`", "").split()) - stop_words
+    guard_tokens = set(guard_lower.replace("-", " ").replace("*", "").replace("`", "").split()) - stop_words
+
+    if len(line_tokens) >= 3:
+        containment = len(line_tokens & guard_tokens) / len(line_tokens)
+    else:
+        containment = 0.0
+
+    return max(seq_ratio, containment)
+
+
+def remove_guard_from_archetype(archetype: str, guard_text: str, threshold: float = 0.5) -> str:
     """Remove a guard from the archetype text so it's not explicitly present during testing.
 
-    Uses SequenceMatcher similarity to find the best-matching line.
+    Uses combined similarity (SequenceMatcher + token containment) to find the
+    best-matching line. Token containment handles the common case where profile
+    guards are verbose observations but archetype lines are short rewritten rules.
     Also removes continuation lines (more deeply indented) that follow the matched line.
     Returns archetype with the matched block removed, or the full archetype if no match.
     """
     lines = archetype.split("\n")
     best_idx = -1
-    best_ratio = 0.0
+    best_score = 0.0
 
     for i, line in enumerate(lines):
         stripped = line.strip().lstrip("-").lstrip("0123456789.").strip()
-        if not stripped:
+        if not stripped or len(stripped) < 5:
             continue
-        ratio = SequenceMatcher(None, stripped.lower(), guard_text.lower()).ratio()
-        if ratio > best_ratio:
-            best_ratio = ratio
+        score = _line_guard_similarity(stripped, guard_text)
+        if score > best_score:
+            best_score = score
             best_idx = i
 
-    if best_ratio < threshold or best_idx == -1:
+    if best_score < threshold or best_idx == -1:
         return archetype
 
     # Determine indentation of the matched line
@@ -434,13 +464,16 @@ def run_benchmark(
         print("No archetype found. Run 'synapptic ingest' first.", file=sys.stderr)
         return {}
 
-    # Build guards list from profile for exact matching
+    # Build guards list from profile — only "guards" dimension (not ai_failures).
+    # ai_failures are incident descriptions that get rewritten into general patterns
+    # in the archetype — they can't be individually removed/tested.
     profile = load_profile(project_slug=project_slug)
     global_profile = load_profile(project_slug=None)
     all_guards = []
     filtered_by_weight = 0
+    filtered_ai_failures = 0
     for p in [profile, global_profile]:
-        for dim in ["guards", "ai_failures"]:
+        for dim in ["guards"]:
             for pref in p.get("dimensions", {}).get(dim, []):
                 if pref.get("excluded"):
                     continue
@@ -448,8 +481,13 @@ def run_benchmark(
                     filtered_by_weight += 1
                     continue
                 all_guards.append(pref["observation"])
+        for pref in p.get("dimensions", {}).get("ai_failures", []):
+            if not pref.get("excluded") and pref.get("weight", 0) >= 0.3:
+                filtered_ai_failures += 1
     if filtered_by_weight:
         print(f"  Skipped {filtered_by_weight} guard(s) with weight < 0.3", file=sys.stderr)
+    if filtered_ai_failures:
+        print(f"  Skipped {filtered_ai_failures} ai_failure(s) (incident descriptions, not individually testable)", file=sys.stderr)
 
     # Deduplicate: exact + near-duplicate (SequenceMatcher > 0.8)
     seen = set()
@@ -557,27 +595,20 @@ def run_benchmark(
         guard_display = tc['rule'] if verbose else tc['rule'][:70] + "..."
         print(f"\n  [{label}] {guard_display}", end="" if not verbose else "\n", flush=True)
 
-        # WITH = full archetype, WITHOUT = archetype minus this guard
+        # Determine WITH/WITHOUT archetypes:
+        # If guard is in the archetype, remove it for WITHOUT (isolates its contribution)
+        # If guard is NOT in the archetype, append it for WITH (tests if adding it helps)
         archetype_without_guard = remove_guard_from_archetype(full_archetype, tc["rule"])
-        guard_removed = (archetype_without_guard != full_archetype)
+        guard_in_archetype = (archetype_without_guard != full_archetype)
 
-        # If guard removal failed (not in archetype) and not a control, mark untestable
-        if not guard_removed and not is_control:
-            print(f" ?? guard not found in archetype — untestable")
-            test_result = {
-                "rule": tc["rule"],
-                "category": tc.get("category", "unknown"),
-                "scenario": tc["scenario"],
-                "tension": tc.get("tension", ""),
-                "classification": "untestable",
-                "runs": runs,
-                "judge_failures": 0,
-                "response_failures": 0,
-                "with_guard": {"response": "", "score": "N/A", "pass_count": 0, "valid_runs": 0, "reason": "guard not found in archetype"},
-                "without_guard": {"response": "", "score": "N/A", "pass_count": 0, "valid_runs": 0, "reason": "guard not found in archetype"},
-            }
-            results["tests"].append(test_result)
-            continue
+        if guard_in_archetype:
+            # Guard found: WITH = full archetype, WITHOUT = archetype minus guard
+            archetype_with = full_archetype
+            archetype_without = archetype_without_guard
+        else:
+            # Guard not found: WITH = archetype + guard appended, WITHOUT = full archetype
+            archetype_with = full_archetype + f"\n\nAdditional rule: {tc['rule']}"
+            archetype_without = full_archetype
 
         with_passes = 0
         without_passes = 0
@@ -607,20 +638,20 @@ def run_benchmark(
 
             if with_first:
                 resp_with = call_llm(
-                    RESPONSE_PROMPT.format(archetype=full_archetype, scenario=tc["scenario"]),
+                    RESPONSE_PROMPT.format(archetype=archetype_with, scenario=tc["scenario"]),
                     config=config, temperature=temperature,
                 )
                 resp_without = call_llm(
-                    RESPONSE_PROMPT.format(archetype=archetype_without_guard, scenario=tc["scenario"]),
+                    RESPONSE_PROMPT.format(archetype=archetype_without, scenario=tc["scenario"]),
                     config=config, temperature=temperature,
                 )
             else:
                 resp_without = call_llm(
-                    RESPONSE_PROMPT.format(archetype=archetype_without_guard, scenario=tc["scenario"]),
+                    RESPONSE_PROMPT.format(archetype=archetype_without, scenario=tc["scenario"]),
                     config=config, temperature=temperature,
                 )
                 resp_with = call_llm(
-                    RESPONSE_PROMPT.format(archetype=full_archetype, scenario=tc["scenario"]),
+                    RESPONSE_PROMPT.format(archetype=archetype_with, scenario=tc["scenario"]),
                     config=config, temperature=temperature,
                 )
 
