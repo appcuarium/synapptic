@@ -1,21 +1,26 @@
 """Write Tier 3 archetypes to AI coding assistant memory/config systems.
 
-Supports multiple output targets: Claude Code, Cursor, Copilot, Gemini.
-Each project gets a combined archetype: global sections + project-specific sections.
+Supports multiple output targets with per-model guard filtering.
+Each target maps to a model family — guards marked redundant/backfire for
+that family are excluded from the archetype written to that target.
 """
 
 from pathlib import Path
 
 from synapptic.config import CLAUDE_PROJECTS_DIR
-from synapptic.outputs import WRITERS, write_claude_code
+from synapptic.outputs import WRITERS, resolve_target_model, write_claude_code
 from synapptic.providers import load_config
-from synapptic.state import slug_from_project_dir, load_archetype
+from synapptic.state import slug_from_project_dir, load_archetype, load_profile
+from synapptic.synthesize import filter_for_narrative
 
 
 def integrate_archetypes(project_slugs: list[str] | None = None):
     """Write combined archetypes to all configured output targets.
 
-    Returns list of (slug, target, path) tuples for what was written.
+    For each target, resolves the best matching model from benchmark verdicts
+    and filters out redundant/backfire guards for that model.
+
+    Returns list of (slug, target, path, target_model) tuples for what was written.
     """
     config = load_config()
     output_targets = config.get("outputs", ["claude-code"])
@@ -32,24 +37,38 @@ def integrate_archetypes(project_slugs: list[str] | None = None):
     updated = []
     for slug, info in project_dirs.items():
         project_archetype = load_archetype(project_slug=slug)
-        combined = combine_archetypes(global_archetype, project_archetype, slug)
-
-        if not combined.strip():
-            continue
+        profile = load_profile(project_slug=slug)
 
         for target in output_targets:
+            # Resolve target model for guard filtering
+            target_model = resolve_target_model(target, profile)
+
+            # If there are model-specific verdicts, note excluded count
+            if target_model:
+                full = filter_for_narrative(profile)
+                filtered = filter_for_narrative(profile, target_model=target_model)
+                full_count = sum(len(v) for v in full.get("dimensions", {}).values())
+                filtered_count = sum(len(v) for v in filtered.get("dimensions", {}).values())
+                excluded_count = full_count - filtered_count
+            else:
+                excluded_count = 0
+
+            combined = combine_archetypes(global_archetype, project_archetype, slug)
+            if not combined.strip():
+                continue
+
             if target == "claude-code":
                 memory_dir = info.get("memory_dir")
                 if memory_dir and memory_dir.exists():
                     write_claude_code(combined, memory_dir)
-                    updated.append((slug, "claude-code", memory_dir))
+                    updated.append((slug, "claude-code", memory_dir, target_model, excluded_count))
 
             elif target in WRITERS:
                 project_root = info.get("project_root")
                 if project_root and project_root.exists():
                     writer = WRITERS[target]
                     writer(combined, project_root)
-                    updated.append((slug, target, project_root))
+                    updated.append((slug, target, project_root, target_model, excluded_count))
 
     return updated
 
@@ -93,11 +112,22 @@ def resolve_project_root(encoded_dir_name: str) -> Path | None:
 
     Claude Code encodes paths: /home/user/projects/app → -home-user-projects-app
     with _ encoded as --, spaces dropped.
+
+    Returns None if the path does not exist, is not a directory, or resolves
+    outside the user's home directory (security boundary).
     """
     name = encoded_dir_name.strip("-")
     # -- represents underscore, - represents /
     path_str = name.replace("--", "\x00").replace("-", "/").replace("\x00", "_")
-    path = Path("/" + path_str)
+    path = Path("/" + path_str).resolve()
+
+    # Security: reject paths outside user's home directory
+    # Use relative_to() not startswith() — startswith("/home/alice") passes "/home/alice_evil"
+    home = Path.home().resolve()
+    try:
+        path.relative_to(home)
+    except ValueError:
+        return None
 
     if path.exists() and path.is_dir():
         return path

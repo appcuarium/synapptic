@@ -6,6 +6,8 @@ they live in.
 """
 
 import json
+import os
+import re
 import shutil
 from datetime import datetime, timezone
 from pathlib import Path
@@ -29,20 +31,33 @@ from synapptic.config import (
 def ensure_dirs():
     """Create state directory structure."""
     SYNAPPTIC_DIR.mkdir(parents=True, exist_ok=True)
-    GLOBAL_DIR.mkdir(exist_ok=True)
-    (GLOBAL_DIR / "observations").mkdir(exist_ok=True)
-    PROJECTS_DIR.mkdir(exist_ok=True)
-    PROFILE_HISTORY_DIR.mkdir(exist_ok=True)
+    GLOBAL_DIR.mkdir(parents=True, exist_ok=True)
+    (GLOBAL_DIR / "observations").mkdir(parents=True, exist_ok=True)
+    PROJECTS_DIR.mkdir(parents=True, exist_ok=True)
+    PROFILE_HISTORY_DIR.mkdir(parents=True, exist_ok=True)
+
+
+_SLUG_RE = re.compile(r'^[a-zA-Z0-9_-]+$')
+
+
+def _check_slug(project_slug: str):
+    if not _SLUG_RE.match(project_slug):
+        raise ValueError(
+            f"Invalid project name {project_slug!r}. "
+            "Only letters, digits, hyphens, and underscores are allowed."
+        )
 
 
 def ensure_project_dirs(project_slug: str):
     """Create per-project directory structure."""
+    _check_slug(project_slug)
     proj = PROJECTS_DIR / project_slug
     proj.mkdir(parents=True, exist_ok=True)
-    (proj / "observations").mkdir(exist_ok=True)
+    (proj / "observations").mkdir(parents=True, exist_ok=True)
 
 
 def project_dir(project_slug: str) -> Path:
+    _check_slug(project_slug)
     return PROJECTS_DIR / project_slug
 
 
@@ -95,11 +110,17 @@ def save_profile(profile: dict, project_slug: str | None = None):
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d_%H%M")
     version = profile.get("metadata", {}).get("profile_version", 0)
 
-    # Atomic write: write to temp file, then rename
+    # Atomic write: write to temp file, fsync, then rename
     tmp_path = path.with_suffix(".yaml.tmp")
-    with open(tmp_path, "w") as f:
-        yaml.dump(profile, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
-    tmp_path.rename(path)
+    try:
+        with open(tmp_path, "w") as f:
+            yaml.dump(profile, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
+            f.flush()
+            os.fsync(f.fileno())
+        tmp_path.rename(path)
+    except Exception:
+        tmp_path.unlink(missing_ok=True)
+        raise
 
     history_path = PROFILE_HISTORY_DIR / f"{label}_{today}_v{version}.yaml"
     shutil.copy2(path, history_path)
@@ -122,14 +143,24 @@ def load_archetype(project_slug: str | None = None) -> str | None:
 
 
 def save_archetype(content: str, project_slug: str | None = None):
-    """Save a narrative archetype."""
+    """Save a narrative archetype (atomic write via temp-file + rename)."""
     ensure_dirs()
     if project_slug:
         ensure_project_dirs(project_slug)
         path = project_dir(project_slug) / "archetype.md"
     else:
         path = GLOBAL_DIR / "archetype.md"
-    path.write_text(content)
+    import os
+    tmp = path.with_suffix(".md.tmp")
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(content)
+            f.flush()
+            os.fsync(f.fileno())
+        tmp.rename(path)
+    except Exception:
+        tmp.unlink(missing_ok=True)
+        raise
 
 
 # ---------------------------------------------------------------------------

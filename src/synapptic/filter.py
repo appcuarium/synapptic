@@ -17,6 +17,13 @@ from synapptic.config import (
     STRONG_REACTION_SIGNALS,
 )
 
+# Short-reply heuristic: a terse user message after a long assistant response
+# is likely a correction or rejection. Typical corrections are 20-50 chars
+# ("no, do X instead"). 60 chars catches multi-word corrections while
+# filtering out longer confirmations ("ok that looks good, also do Y").
+CORRECTION_MAX_USER_CHARS = 60
+CORRECTION_MIN_ASSISTANT_CHARS = 500
+
 
 @dataclass
 class Turn:
@@ -182,8 +189,8 @@ def apply_boosts(turns: list[Turn]):
 
         # Short user message after long assistant message = likely correction
         if (i > 0 and turns[i - 1].role == "assistant"
-                and len(turn.text) < 100
-                and len(turns[i - 1].text) > 500):
+                and len(turn.text) < CORRECTION_MAX_USER_CHARS
+                and len(turns[i - 1].text) > CORRECTION_MIN_ASSISTANT_CHARS):
             turn.boosted = True
             turn.boost_reason = "short reply after long response"
 
@@ -212,16 +219,20 @@ def truncate_to_budget(turns: list[Turn], max_chars: int) -> list[Turn]:
     priority_turns = [(i, turns[i]) for i in sorted(priority_indices)]
     priority_chars = sum(len(t.text) for _, t in priority_turns)
 
-    # If priority turns alone exceed budget, truncate each
+    # If priority turns alone exceed budget, allocate proportionally then truncate
     if priority_chars > max_chars:
         result = []
-        budget = max_chars
         for _, turn in priority_turns:
-            if budget <= 0:
-                break
-            if len(turn.text) > budget:
-                turn.text = turn.text[:budget] + "..."
-            budget -= len(turn.text)
+            # Each turn gets a share of budget proportional to its size
+            share = max(4, int(max_chars * len(turn.text) / priority_chars))
+            if len(turn.text) > share:
+                cut_point = share - 3
+                for end_char in ('.', '!', '?'):
+                    last_end = turn.text.rfind(end_char, int(cut_point * 0.8), cut_point + 1)
+                    if last_end != -1:
+                        cut_point = last_end + 1
+                        break
+                turn.text = turn.text[:cut_point] + "..."
             result.append(turn)
         return result
 
@@ -245,12 +256,19 @@ def truncate_to_budget(turns: list[Turn], max_chars: int) -> list[Turn]:
     return [turns[i] for i in sorted(result_indices)]
 
 
-def turns_to_text(turns: list[Turn]) -> str:
-    """Convert filtered turns into a text document for LLM consumption."""
+def turns_to_text(turns: list[Turn], scrub: bool = True) -> str:
+    """Convert filtered turns into a text document for LLM consumption.
+
+    Applies sensitive data scrubbing by default before the text is sent
+    to the extraction LLM. Disable with scrub=False for debugging.
+    """
+    from synapptic.scrub import scrub_text
+
     parts = []
     for turn in turns:
         prefix = "USER" if turn.role == "user" else "ASSISTANT"
-        parts.append(f"[{prefix}]: {turn.text}")
+        text = scrub_text(turn.text) if scrub else turn.text
+        parts.append(f"[{prefix}]: {text}")
     return "\n\n".join(parts)
 
 

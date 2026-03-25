@@ -7,9 +7,7 @@ This module provides read-only queries over those saved results.
 import json
 from datetime import datetime
 
-from synapptic.config import SYNAPPTIC_DIR
-
-BENCHMARKS_DIR = SYNAPPTIC_DIR / "benchmarks"
+from synapptic.config import BENCHMARKS_DIR
 
 
 def list_benchmark_results(provider: str | None = None, model: str | None = None) -> list[dict]:
