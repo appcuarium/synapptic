@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.1.0b5 — 2026-03-25
+
+### Bug fixes
+
+- **Test suite**: hardcoded `last_seen` dates in fixtures caused time-based decay to apply unexpectedly as time passed — replaced with dynamic today() so decay tests are stable regardless of when they run
+- **Test assertions**: `test_redacts_sk_key` and `test_redacts_aiza_key` had wrong expected prefix lengths — corrected to match actual regex behavior
+
+---
+
 ## v0.1.0b4 — 2026-03-25
 
 ### Unified dashboard
