@@ -43,15 +43,19 @@ def _get_session_id(config: dict) -> str | None:
 _TPM_RESPONSE_RESERVE = 0.30
 
 
+_MAX_CHUNK_SIZE = 50  # cap per judge call to avoid output token truncation
+
+
 def compute_batch_chunks(scenarios: list[str], archetype: str, config: dict) -> list[list[int]]:
     """Split scenario indices into chunks that fit within TPM limits.
 
     Returns list of index lists, e.g. [[0,1,2,3], [4,5,6,7], ...].
-    If no TPM limit, returns one chunk with all indices.
+    Always caps at _MAX_CHUNK_SIZE to avoid judge output truncation.
     """
     tpm_limit, _ = _resolve_limits(config)
     if not tpm_limit:
-        return [list(range(len(scenarios)))]
+        n = len(scenarios)
+        return [list(range(i, min(i + _MAX_CHUNK_SIZE, n))) for i in range(0, n, _MAX_CHUNK_SIZE)]
 
     # Budget = TPM minus response reserve, minus prompt template + archetype overhead
     prompt_overhead = estimate_tokens(BATCH_RESPONSE_PROMPT) + estimate_tokens(archetype) + 100
@@ -65,7 +69,7 @@ def compute_batch_chunks(scenarios: list[str], archetype: str, config: dict) -> 
 
     for i, scenario in enumerate(scenarios):
         cost = estimate_tokens(f"g{i+1}. {scenario}")
-        if current_chunk and current_tokens + cost > budget:
+        if current_chunk and (current_tokens + cost > budget or len(current_chunk) >= _MAX_CHUNK_SIZE):
             chunks.append(current_chunk)
             current_chunk = []
             current_tokens = 0
@@ -1486,7 +1490,7 @@ def _parse_verdicts(raw: str | None, expected_length: int) -> list[dict] | None:
     end = raw.rfind("]")
     if end != -1:
         arr = _safe_json_loads(raw[start:end + 1])
-        if isinstance(arr, list) and len(arr) >= expected_length * 0.8:
+        if isinstance(arr, list) and len(arr) >= expected_length * 0.75:
             unknown = {"verdict": "UNKNOWN", "reason": "missing from response"}
             return arr + [unknown] * max(0, expected_length - len(arr))
 
@@ -1494,7 +1498,7 @@ def _parse_verdicts(raw: str | None, expected_length: int) -> list[dict] | None:
     fragment = raw[start:]
     for suffix in [']', '"}]', '..."}]']:
         arr = _safe_json_loads(fragment.rstrip().rstrip(",") + suffix)
-        if isinstance(arr, list) and len(arr) >= expected_length * 0.8:
+        if isinstance(arr, list) and len(arr) >= expected_length * 0.75:
             unknown = {"verdict": "UNKNOWN", "reason": "missing from response"}
             return arr + [unknown] * max(0, expected_length - len(arr))
 
