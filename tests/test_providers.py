@@ -109,13 +109,13 @@ class TestRedactSecrets:
     def test_redacts_sk_key(self):
         from synapptic.providers import redact_secrets
         result = redact_secrets("error with sk-ant-v7abcdef1234567890")
-        assert "sk-ant-v7..." in result
+        assert "sk-ant-..." in result  # regex keeps pattern prefix + 4 chars = "sk-ant-"
         assert "1234567890" not in result
 
     def test_redacts_aiza_key(self):
         from synapptic.providers import redact_secrets
         result = redact_secrets("AIzaSyAbcdef1234567890XXXX error")
-        assert "AIzaSy..." in result
+        assert "AIzaSyAb..." in result  # regex keeps "AIza" prefix + 4 chars = "AIzaSyAb"
         assert "1234567890" not in result
 
     def test_redacts_bearer_token(self):

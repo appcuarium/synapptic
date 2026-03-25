@@ -1,8 +1,13 @@
 """Test fixtures for synapptic."""
 
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
+
+
+def _today() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
@@ -81,7 +86,7 @@ def populated_profile():
                     "weight": 0.85,
                     "evidence_count": 5,
                     "first_seen": "2026-01-01T00:00:00Z",
-                    "last_seen": "2026-03-10T00:00:00Z",
+                    "last_seen": _today(),
                     "sources": ["session-old-1", "session-old-2"],
                 },
             ],
@@ -91,7 +96,7 @@ def populated_profile():
                     "weight": 0.70,
                     "evidence_count": 3,
                     "first_seen": "2026-02-01T00:00:00Z",
-                    "last_seen": "2026-03-05T00:00:00Z",
+                    "last_seen": _today(),
                     "sources": ["session-old-3"],
                 },
             ],

@@ -1,6 +1,12 @@
 """Tests for profile merging and accumulation."""
 
+from datetime import datetime, timezone
+
 from synapptic.profile import merge_observations, profile_summary, find_match, promote_to_global
+
+
+def _today() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def test_merge_into_empty_profile(empty_profile, sample_observations):
@@ -115,13 +121,14 @@ def test_stable_key_no_collision_for_long_shared_prefix(empty_profile):
     prefix = "A" * 110
     obs1 = prefix + " do X"
     obs2 = prefix + " do Y"
+    today = _today()
     profile = {
         "dimensions": {
             "guards": [
                 {"observation": obs1, "weight": 0.9, "evidence_count": 3,
-                 "first_seen": "2026-01-01T00:00:00Z", "last_seen": "2026-01-01T00:00:00Z", "sources": []},
+                 "first_seen": today, "last_seen": today, "sources": []},
                 {"observation": obs2, "weight": 0.2, "evidence_count": 1,
-                 "first_seen": "2026-01-01T00:00:00Z", "last_seen": "2026-01-01T00:00:00Z", "sources": []},
+                 "first_seen": today, "last_seen": today, "sources": []},
             ]
         },
         "metadata": {"total_sessions_analyzed": 0, "last_updated": None, "profile_version": 0},
