@@ -7,26 +7,72 @@ Writes the archetype to different AI coding assistant formats:
 - Gemini: GEMINI.md
 """
 
+import os
 from pathlib import Path
 
 
+def _atomic_write(path: Path, content: str) -> None:
+    """Write content atomically: write to temp file, fsync, rename."""
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(content)
+            f.flush()
+            os.fsync(f.fileno())
+        tmp.rename(path)
+    except Exception:
+        tmp.unlink(missing_ok=True)
+        raise
+
+
 # Available output targets
+# model_family: used to filter guards by per-model benchmark verdicts.
+# Matched against model_verdicts keys in profile.yaml (prefix match).
 OUTPUTS = {
     "claude-code": {
         "name": "Claude Code",
         "description": "Writes to Claude Code memory system (~/.claude/projects/*/memory/)",
+        "model_family": "claude",
     },
     "cursor": {
         "name": "Cursor",
         "description": "Writes to .cursor/rules/synapptic.mdc (project root)",
+        "model_family": None,  # Cursor can use any model — no filtering
     },
     "copilot": {
         "name": "GitHub Copilot",
         "description": "Writes to .github/copilot-instructions.md (project root)",
+        "model_family": "gpt",
     },
     "gemini": {
-        "name": "Gemini",
-        "description": "Writes to GEMINI.md (project root)",
+        "name": "Gemini Code Assist",
+        "description": "Writes to .gemini/styleguide.md (project root)",
+        "model_family": "gemini",
+    },
+    "codex": {
+        "name": "OpenAI Codex CLI",
+        "description": "Writes to AGENTS.md (project root)",
+        "model_family": "gpt",
+    },
+    "windsurf": {
+        "name": "Windsurf",
+        "description": "Writes to .windsurfrules (project root)",
+        "model_family": None,
+    },
+    "cline": {
+        "name": "Cline",
+        "description": "Writes to .clinerules (project root)",
+        "model_family": None,
+    },
+    "aider": {
+        "name": "Aider",
+        "description": "Writes to CONVENTIONS.md (project root)",
+        "model_family": None,
+    },
+    "continue": {
+        "name": "Continue.dev",
+        "description": "Writes to .continuerules (project root)",
+        "model_family": None,
     },
 }
 
@@ -42,7 +88,7 @@ def write_claude_code(archetype: str, memory_dir: Path) -> bool:
         "---\n\n"
     )
     path = memory_dir / "user_archetype.md"
-    path.write_text(frontmatter + archetype)
+    _atomic_write(path, frontmatter + archetype)
 
     # Ensure MEMORY.md references it — insert near top so it's within the
     # 200-line cutoff (Claude Code truncates MEMORY.md after line 200)
@@ -66,7 +112,7 @@ def write_claude_code(archetype: str, memory_dir: Path) -> bool:
                     break
             lines.insert(insert_idx, entry)
             lines.insert(insert_idx + 1, "")
-            index_path.write_text("\n".join(lines))
+            _atomic_write(index_path, "\n".join(lines))
         else:
             # Already referenced — move it to the top if it's past line 200
             lines = content.split("\n")
@@ -90,7 +136,7 @@ def write_claude_code(archetype: str, memory_dir: Path) -> bool:
                         break
                 lines.insert(insert_idx, entry)
                 lines.insert(insert_idx + 1, "")
-                index_path.write_text("\n".join(lines))
+                _atomic_write(index_path, "\n".join(lines))
 
     return True
 
@@ -108,7 +154,7 @@ def write_cursor(archetype: str, project_root: Path) -> bool:
         "---\n\n"
     )
     path = rules_dir / "synapptic.mdc"
-    path.write_text(frontmatter + archetype)
+    _atomic_write(path, frontmatter + archetype)
     return True
 
 
@@ -131,26 +177,28 @@ def write_copilot(archetype: str, project_root: Path) -> bool:
             import re
             content = re.sub(
                 f"{re.escape(marker_start)}.*?{re.escape(marker_end)}",
-                section,
+                lambda m: section,
                 content,
                 flags=re.DOTALL,
             )
-            path.write_text(content)
+            _atomic_write(path, content)
         else:
             # Append
             if not content.endswith("\n"):
                 content += "\n"
             content += f"\n{section}\n"
-            path.write_text(content)
+            _atomic_write(path, content)
     else:
-        path.write_text(section + "\n")
+        _atomic_write(path, section + "\n")
 
     return True
 
 
 def write_gemini(archetype: str, project_root: Path) -> bool:
-    """Write archetype to GEMINI.md."""
-    path = project_root / "GEMINI.md"
+    """Write archetype to .gemini/styleguide.md."""
+    gemini_dir = project_root / ".gemini"
+    gemini_dir.mkdir(parents=True, exist_ok=True)
+    path = gemini_dir / "styleguide.md"
 
     marker_start = "<!-- synapptic:start -->"
     marker_end = "<!-- synapptic:end -->"
@@ -162,20 +210,99 @@ def write_gemini(archetype: str, project_root: Path) -> bool:
             import re
             content = re.sub(
                 f"{re.escape(marker_start)}.*?{re.escape(marker_end)}",
-                section,
+                lambda m: section,
                 content,
                 flags=re.DOTALL,
             )
-            path.write_text(content)
+            _atomic_write(path, content)
         else:
             if not content.endswith("\n"):
                 content += "\n"
             content += f"\n{section}\n"
-            path.write_text(content)
+            _atomic_write(path, content)
     else:
-        path.write_text(section + "\n")
+        _atomic_write(path, section + "\n")
 
     return True
+
+
+def write_codex(archetype: str, project_root: Path) -> bool:
+    """Write archetype to OpenAI Codex CLI AGENTS.md."""
+    path = project_root / "AGENTS.md"
+    marker_start = "<!-- synapptic:start -->"
+    marker_end = "<!-- synapptic:end -->"
+    section = f"{marker_start}\n{archetype}\n{marker_end}"
+
+    if path.exists():
+        content = path.read_text()
+        if marker_start in content:
+            import re
+            content = re.sub(
+                f"{re.escape(marker_start)}.*?{re.escape(marker_end)}",
+                lambda m: section, content, flags=re.DOTALL,
+            )
+            _atomic_write(path, content)
+        else:
+            if not content.endswith("\n"):
+                content += "\n"
+            content += f"\n{section}\n"
+            _atomic_write(path, content)
+    else:
+        _atomic_write(path, section + "\n")
+    return True
+
+
+def write_windsurf(archetype: str, project_root: Path) -> bool:
+    """Write archetype to .windsurfrules."""
+    path = project_root / ".windsurfrules"
+    _atomic_write(path, archetype + "\n")
+    return True
+
+
+def write_cline(archetype: str, project_root: Path) -> bool:
+    """Write archetype to .clinerules."""
+    path = project_root / ".clinerules"
+    _atomic_write(path, archetype + "\n")
+    return True
+
+
+def write_aider(archetype: str, project_root: Path) -> bool:
+    """Write archetype to CONVENTIONS.md."""
+    path = project_root / "CONVENTIONS.md"
+    _atomic_write(path, archetype + "\n")
+    return True
+
+
+def write_continue(archetype: str, project_root: Path) -> bool:
+    """Write archetype to .continuerules."""
+    path = project_root / ".continuerules"
+    _atomic_write(path, archetype + "\n")
+    return True
+
+
+def resolve_target_model(target: str, profile: dict) -> str | None:
+    """Find the best model to filter guards for a given output target.
+
+    Looks at model_verdicts keys in the profile and matches by model_family prefix.
+    Returns the most-tested model name, or None if no match.
+    """
+    family = OUTPUTS.get(target, {}).get("model_family")
+    if not family:
+        return None
+
+    # Collect all model names from model_verdicts across guards
+    model_counts = {}
+    for dim in ("guards", "ai_failures"):
+        for pref in profile.get("dimensions", {}).get(dim, []):
+            for model_name in pref.get("model_verdicts", {}):
+                if model_name.lower().startswith(family) or family in model_name.lower():
+                    model_counts[model_name] = model_counts.get(model_name, 0) + 1
+
+    if not model_counts:
+        return None
+
+    # Return the model with the most verdicts
+    return max(model_counts, key=model_counts.get)
 
 
 WRITERS = {
@@ -183,4 +310,9 @@ WRITERS = {
     "cursor": write_cursor,
     "copilot": write_copilot,
     "gemini": write_gemini,
+    "codex": write_codex,
+    "windsurf": write_windsurf,
+    "cline": write_cline,
+    "aider": write_aider,
+    "continue": write_continue,
 }

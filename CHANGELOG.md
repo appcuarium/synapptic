@@ -1,5 +1,84 @@
 # Changelog
 
+## v0.1.0b4 — 2026-03-25
+
+### Unified dashboard
+
+A single page at `/dashboard/` that combines session browsing, live conversation streaming, and real-time token metrics.
+
+- **Three-panel layout** — projects on the left, conversation in the center, session list on the right
+- **Full conversation rendering** — markdown, collapsible tool calls as inline pills, token usage per turn
+- **Live streaming** — active sessions update in real-time via WebSocket, green dot indicator
+- **Real-time metrics** — sticky bar shows requests, input/output tokens, cache usage, and estimated cost — pushed via WebSocket, no polling
+- **Compaction visibility** — purple banners mark where context was compacted with pre-compaction token count
+- **Full-text search** — FTS5 search across session titles and first messages
+- **SQLite session index** — `synapptic index` scans all sessions once (~15s for 4000 files), incremental after that
+- **Sensitive data scrubbing** — API keys, tokens, PEM keys, URL credentials, and high-entropy strings redacted before display
+- **Machine FE color palette** — matching dark slate theme
+
+### Session browser: live session lifecycle
+
+- **Per-session token stats** — clicking any session shows its token usage (input, output, cache read/write) and estimated cost, read directly from JSONL `usage` fields rather than relay totals
+- **Session-end notification** — the SessionEnd hook fires `POST /browser/api/session-ended`; the green dot disappears and the session leaves the active list instantly, no polling delay
+- **Instant active session appearance** — on the first API request through the relay the server pushes an `active_check` WebSocket event; the active session appears in the sidebar within 400ms of the first message, without waiting for the 5-second poll
+- **Live metrics only for selected session** — metrics accumulate continuously across all relay requests but are pushed to the browser only when that session is actively selected; switching sessions stops the push immediately
+- **Metrics bar always visible on click** — the stats bar appears whenever a session is clicked (historical or active); historical sessions show JSONL totals, active sessions show live-updating relay metrics
+
+### Relay
+
+Local server that sits between your AI tool and the LLM API. Everything stays on your machine.
+
+- **`synapptic run <tool>`** — launches any AI tool through the relay (Claude, Cursor, Copilot, Aider, Codex, Windsurf)
+- **Token summary on exit** — requests, input/output tokens, cache usage
+- **`synapptic relay enable/start/stop/status`** — full lifecycle management
+- **Optional install** — `pip install synapptic[relay]` (fastapi, httpx, uvicorn)
+
+### Benchmark improvements
+
+- **Per-provider, per-model rate limiting** — sliding window TPM/RPM with proactive throttling
+- **Dynamic batch sizing** — halves chunk size on 429, re-queues failed work
+- **Per-model guard verdicts** — benchmark results stored per model in the profile
+- **`--target-model`** on `synapptic synthesize` — filter guards by model benchmark results
+- **`--chunks`** option — manual chunk override for large guard sets
+- **Groq** added as first-class provider with 5 models and per-model rate limits
+- **503 retry** — 10s/20s/30s backoff on service unavailable
+- **Daily limit detection** — stops immediately on TPD/RPD errors
+
+### Output targets
+
+- Added Codex CLI, Windsurf, Cline, Aider, Continue.dev writers
+- Updated Gemini path to `.gemini/styleguide.md`
+- Per-model guard filtering — guards excluded per output target based on benchmark verdicts
+
+### Security
+
+- Three-layer sensitive data scrubbing (provider prefixes, keyword-value pairs, Shannon entropy); Gemini `AIza` key prefix added
+- Config file 0600 permissions
+- **HTTP hostname parsing** — loopback check uses `urlparse().hostname`; subdomain lookalikes like `localhost.attacker.com` are correctly blocked
+- **file:// scheme blocked** — `call_openai_compatible` and `call_ollama` reject any URL that does not start with `http://` or `https://`
+- **Non-loopback HTTP blocked** — plain HTTP URLs return `None`; only HTTPS or loopback connections are forwarded
+- **Path traversal** — `path.relative_to(home)` replaces `str(path).startswith(str(home))`, which accepted `/home/alice_evil` as a child of `/home/alice`
+- **Benchmark envelope nonce** — per-run random 16-char hex token embedded in envelope markers (`===BEGIN_PROFILE_{nonce}===`), preventing archetype content from forging the boundary and injecting instructions into the benchmark prompt
+- **Transcript injection guard** — filtered transcript wrapped in `<transcript>` tags with "REFERENCE ONLY" instruction before passing to extraction LLM
+- **Profile injection guard** — profile YAML wrapped in `<profile_yaml>` tags with "REFERENCE ONLY" instruction before synthesis
+- stderr/HTTP body redaction across all providers
+
+### Bug fixes
+
+- **Atomic writes** — all 9 output writers and `save_profile` use fsync + rename, preventing half-written files on crash or power loss
+- **Stable profile key** — pre-decay weight lookup uses full observation text instead of a truncated 120-char prefix, fixing collisions on observations with shared prefixes
+- **Budget floor removed** — the `max(50, ...)` floor in proportional truncation allowed one very long turn to absorb the entire token budget
+- **Rate limit double-multiplier removed** — `rate_limit_record` was called with `est_tokens * 1.5`, applying a buffer on top of an already-conservative estimate
+- Cache key collision fix (md5), dedup threshold 0.8, time-based decay
+- Double-decay rounding fix, sentence boundary awareness
+- Invalid dimension warning, unified BENCHMARKS_DIR, global state reset
+- re.sub lambda replacement, lstrip corruption fix
+
+### Test coverage
+
+- **~340 tests** across 14 files (was 163 in b3)
+- New: test_cli, test_benchmark_results, test_config, test_patterns, test_state, test_outputs, test_extract, test_integrate, test_synthesize, test_providers, test_scrub
+
 ## v0.1.0b3
 
 ### Command rename

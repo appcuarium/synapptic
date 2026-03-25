@@ -10,6 +10,7 @@ Observations in MIXED_DIMENSIONS start project-local and promote
 to global when seen across multiple projects.
 """
 
+import math
 from datetime import datetime, timezone
 from difflib import SequenceMatcher
 
@@ -19,6 +20,7 @@ from synapptic.config import (
     GLOBAL_PROMOTION_MIN_PROJECTS,
     MIN_WEIGHT_THRESHOLD,
     MIXED_DIMENSIONS,
+    TIME_DECAY_HALFLIFE_DAYS,
     PROJECT_DIMENSIONS,
 )
 
@@ -47,9 +49,25 @@ def merge_observations(
     })
 
     # Step 1: Apply decay to all existing preferences
+    # Two components: (a) per-merge multiplicative decay, (b) time-based half-life
+    # Store pre-decay weights so step 2 can blend without divide-induced rounding errors
+    now = datetime.now(timezone.utc)
+    pre_decay_weights = {}
     for dim_name, prefs in dimensions.items():
         for pref in prefs:
+            # Use observation text as stable key — id() breaks on deep-copy/reconstruction
+            stable_key = (dim_name, pref.get("observation", ""))
+            pre_decay_weights[stable_key] = pref.get("weight", 0.5)
             pref["weight"] = pref.get("weight", 0.5) * decay_factor
+            last_seen = pref.get("last_seen", "")
+            if last_seen and TIME_DECAY_HALFLIFE_DAYS > 0:
+                try:
+                    last_dt = datetime.fromisoformat(last_seen)
+                    days_ago = (now - last_dt).days
+                    if days_ago > 0:
+                        pref["weight"] *= math.pow(0.5, days_ago / TIME_DECAY_HALFLIFE_DAYS)
+                except (ValueError, TypeError):
+                    pass
 
     # Step 2: Merge each new observation
     session_ids_seen = set()
@@ -70,10 +88,12 @@ def merge_observations(
             # Reinforce existing preference
             existing = dimensions[dim][match_idx]
             existing["evidence_count"] = existing.get("evidence_count", 1) + 1
-            # Boost weight: undo decay + add new confidence
+            # Boost weight: blend pre-decay weight with new confidence
+            stable_key = (dim, existing.get("observation", ""))
+            old_weight = pre_decay_weights.get(stable_key, existing["weight"])
             existing["weight"] = min(
                 1.0,
-                existing["weight"] / decay_factor * 0.7 + obs.get("confidence", 0.5) * 0.3,
+                old_weight * 0.7 + obs.get("confidence", 0.5) * 0.3,
             )
             existing["last_seen"] = obs.get("timestamp", "")
             # Add source session (cap at 10 most recent to prevent unbounded growth)
@@ -201,7 +221,14 @@ def promote_to_global(project_profiles: dict[str, dict], global_profile: dict) -
 def find_match(prefs: list[dict], observation_text: str, threshold: float = 0.7) -> int | None:
     """Find existing preference that matches the new observation.
 
-    Uses SequenceMatcher for similarity. Returns index or None.
+    Uses SequenceMatcher (Ratcliff/Obershelp) for similarity. Returns the index
+    of the best match, or None if no match exceeds the threshold.
+
+    Threshold 0.7 was chosen empirically: 0.6 produces false merges (e.g.,
+    "prefer tabs" matches "prefer spaces"), while 0.8 misses obvious paraphrases
+    (e.g., "always read files first" vs "reads files before modifying").
+    SequenceMatcher was chosen over Jaccard because observation texts are short
+    sentences where word order matters.
     """
     best_ratio = 0.0
     best_idx = None

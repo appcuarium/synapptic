@@ -1,6 +1,6 @@
 [project]
 name = "synapptic"
-version = "0.1.0b3"
+version = "0.1.0b4"
 description = "The missing synapse between you and your AI agents. Learns how you work, detects what your AI gets wrong, and makes every session feel like picking up where you left off."
 requires-python = ">=3.10"
 license = "MIT"
@@ -21,6 +21,9 @@ classifiers = [
 ]
 dependencies = ["click>=8.0", "pyyaml>=6.0"]
 
+[project.optional-dependencies]
+relay = ["fastapi>=0.100", "httpx>=0.24", "uvicorn>=0.20"]
+
 [project.urls]
 Homepage = "https://github.com/appcuarium/synapptic"
 Repository = "https://github.com/appcuarium/synapptic"
@@ -37,4 +40,4 @@ build-backend = "setuptools.build_meta"
 where = ["src"]
 
 [tool.setuptools.package-data]
-synapptic = ["bundle/**/*"]
+synapptic = ["bundle/**/*", "relay/templates/**/*"]

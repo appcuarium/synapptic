@@ -1,6 +1,6 @@
 """Tests for profile merging and accumulation."""
 
-from synapptic.profile import merge_observations, profile_summary, find_match
+from synapptic.profile import merge_observations, profile_summary, find_match, promote_to_global
 
 
 def test_merge_into_empty_profile(empty_profile, sample_observations):
@@ -108,3 +108,95 @@ def test_sorted_by_weight(empty_profile):
     result = merge_observations(empty_profile, observations)
     workflow = result["dimensions"]["workflow"]
     assert workflow[0]["weight"] > workflow[1]["weight"]
+
+
+def test_stable_key_no_collision_for_long_shared_prefix(empty_profile):
+    """Two observations sharing the same first 120+ chars must not collide on pre-decay weight lookup."""
+    prefix = "A" * 110
+    obs1 = prefix + " do X"
+    obs2 = prefix + " do Y"
+    profile = {
+        "dimensions": {
+            "guards": [
+                {"observation": obs1, "weight": 0.9, "evidence_count": 3,
+                 "first_seen": "2026-01-01T00:00:00Z", "last_seen": "2026-01-01T00:00:00Z", "sources": []},
+                {"observation": obs2, "weight": 0.2, "evidence_count": 1,
+                 "first_seen": "2026-01-01T00:00:00Z", "last_seen": "2026-01-01T00:00:00Z", "sources": []},
+            ]
+        },
+        "metadata": {"total_sessions_analyzed": 0, "last_updated": None, "profile_version": 0},
+    }
+    # Decay without new observations — both entries should survive as separate items
+    # and their weights should differ (not merged or swapped due to key collision)
+    result = merge_observations(profile, [], decay_factor=0.9)
+    guards = result["dimensions"].get("guards", [])
+    assert len(guards) == 2, "both preferences must survive as separate entries"
+    w = {p["observation"]: p["weight"] for p in guards}
+    assert w[obs1] > w[obs2], "high-weight pref must remain higher than low-weight after decay"
+
+
+class TestPromoteToGlobal:
+
+    def test_appears_in_two_projects_promotes(self):
+        """An observation in a MIXED_DIMENSION appearing in 2+ projects should be returned for promotion."""
+        projects = {
+            "project-a": {
+                "dimensions": {
+                    "guards": [
+                        {"observation": "NEVER commit without running tests",
+                         "weight": 0.9, "evidence_count": 3, "sources": [], "projects": ["project-a"]}
+                    ]
+                }
+            },
+            "project-b": {
+                "dimensions": {
+                    "guards": [
+                        {"observation": "NEVER commit without running tests first",
+                         "weight": 0.85, "evidence_count": 2, "sources": [], "projects": ["project-b"]}
+                    ]
+                }
+            },
+        }
+        global_profile = {"dimensions": {}, "metadata": {}}
+        promotions = promote_to_global(projects, global_profile)
+        assert len(promotions) == 1
+        assert "commit" in promotions[0]["observation"].lower()
+
+    def test_single_project_does_not_promote(self):
+        """An observation in only one project should NOT be promoted to global."""
+        projects = {
+            "project-a": {
+                "dimensions": {
+                    "guards": [
+                        {"observation": "NEVER use star imports",
+                         "weight": 0.9, "evidence_count": 2, "sources": [], "projects": ["project-a"]}
+                    ]
+                }
+            }
+        }
+        global_profile = {"dimensions": {}, "metadata": {}}
+        promotions = promote_to_global(projects, global_profile)
+        assert len(promotions) == 0
+
+    def test_already_in_global_not_duplicated(self):
+        """An observation already in the global profile should not be returned again."""
+        obs = "NEVER commit without running tests"
+        projects = {
+            "project-a": {"dimensions": {"guards": [{"observation": obs, "weight": 0.9, "evidence_count": 2, "sources": []}]}},
+            "project-b": {"dimensions": {"guards": [{"observation": obs, "weight": 0.85, "evidence_count": 2, "sources": []}]}},
+        }
+        global_profile = {
+            "dimensions": {"guards": [{"observation": obs, "weight": 0.8, "evidence_count": 1, "sources": []}]}
+        }
+        promotions = promote_to_global(projects, global_profile)
+        assert len(promotions) == 0
+
+    def test_project_dimension_never_promotes(self):
+        """Observations in PROJECT_DIMENSIONS (code_style) should not be promoted."""
+        projects = {
+            "project-a": {"dimensions": {"code_style": [{"observation": "use 2-space indent", "weight": 0.9, "evidence_count": 2, "sources": []}]}},
+            "project-b": {"dimensions": {"code_style": [{"observation": "use 2-space indent", "weight": 0.9, "evidence_count": 2, "sources": []}]}},
+        }
+        global_profile = {"dimensions": {}, "metadata": {}}
+        promotions = promote_to_global(projects, global_profile)
+        assert len(promotions) == 0
