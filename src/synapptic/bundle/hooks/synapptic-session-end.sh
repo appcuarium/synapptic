@@ -24,7 +24,13 @@ if [ -z "$SESSION_ID" ]; then
     exit 0
 fi
 
-# Only process explicit user exits
+# Notify relay dashboard immediately (fire-and-forget, relay may not be running)
+curl -sf -X POST http://127.0.0.1:5100/browser/api/session-ended \
+    -H "Content-Type: application/json" \
+    -d "{\"session_id\":\"$SESSION_ID\"}" \
+    --max-time 2 >/dev/null 2>&1 || true
+
+# Only process explicit user exits for extraction pipeline
 if [ "$REASON" != "prompt_input_exit" ] && [ "$REASON" != "clear" ] && [ "$REASON" != "logout" ]; then
     exit 0
 fi

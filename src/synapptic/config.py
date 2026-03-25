@@ -8,7 +8,7 @@ SYNAPPTIC_DIR = Path.home() / ".synapptic"
 GLOBAL_DIR = SYNAPPTIC_DIR / "global"
 PROJECTS_DIR = SYNAPPTIC_DIR / "projects"
 PROFILE_HISTORY_DIR = SYNAPPTIC_DIR / "profile_history"
-BENCHMARK_RESULTS_DIR = SYNAPPTIC_DIR / "benchmark_results"
+BENCHMARKS_DIR = SYNAPPTIC_DIR / "benchmarks"
 CONFIG_PATH = SYNAPPTIC_DIR / "config.yaml"
 QUEUE_PATH = SYNAPPTIC_DIR / "queue.txt"
 
@@ -25,6 +25,7 @@ DEFAULT_DECAY_FACTOR = 0.98
 MIN_WEIGHT_THRESHOLD = 0.1  # archive below this
 NARRATIVE_MIN_WEIGHT = 0.3  # include in archetype above this
 NARRATIVE_MIN_EVIDENCE = 1  # weight is the primary quality filter
+TIME_DECAY_HALFLIFE_DAYS = 90  # additional time-based decay: halve weight every N days unseen
 
 # Global promotion: observations appearing in N+ projects promote to global
 GLOBAL_PROMOTION_MIN_PROJECTS = 2

@@ -4,12 +4,19 @@ from synapptic.filter import filter_transcript, turns_to_text, estimate_tokens
 
 
 def test_filter_strips_progress_records(sample_session_path):
-    """Progress records should be completely stripped."""
+    """Progress records should be completely stripped — raw file has them, filtered result does not."""
+    import json
+    raw = [json.loads(l) for l in sample_session_path.read_text().splitlines() if l.strip()]
+    # Sanity: fixture must contain progress records, otherwise this test is vacuous
+    assert any(r.get("type") == "progress" for r in raw), \
+        "sample_session.jsonl must contain progress records for this test to be meaningful"
+
     turns = filter_transcript(sample_session_path)
-    texts = [t.text for t in turns]
-    # No turn should contain progress-like content
-    for text in texts:
-        assert "progress" not in text.lower() or "progress" in text.lower()  # Just checking it parses
+    assert len(turns) > 0, "filter_transcript() dropped all turns — would vacuously pass role check"
+    roles = [t.role for t in turns]
+    assert all(r in ("user", "assistant") for r in roles)
+    # Should have fewer turns than raw records (progress + system + tool_result stripped)
+    assert len(turns) < len(raw)
 
 
 def test_filter_strips_system_records(sample_session_path):
@@ -99,3 +106,22 @@ def test_filter_truncation(sample_session_path):
     # At least some boosted turns should survive
     boosted = [t for t in turns if t.boosted]
     # May or may not have boosted turns depending on budget, but shouldn't crash
+
+
+def test_proportional_truncation_zero_share():
+    """A tiny turn with a near-zero proportional share must not be truncated to negative index."""
+    from synapptic.filter import Turn, truncate_to_budget
+
+    # One tiny boosted turn (10 chars) + one huge boosted turn (10000 chars).
+    # Budget = 100 chars. Tiny turn's share = max(1, int(100 * 10 / 10010)) = max(1, 0) = 1.
+    # Without the floor, share = 0 → cut_point = -3 → text[:-3] silently removes last 3 chars.
+    tiny = Turn(role="user", text="A" * 10, boosted=True)
+    huge = Turn(role="assistant", text="B" * 10000, boosted=True)
+    result = truncate_to_budget([huge, tiny], max_chars=100)
+    # Neither turn should have had characters removed from the wrong end
+    for t in result:
+        assert not t.text.endswith("BBB")  # "B" * 10000 truncated from the right is fine
+    # Tiny turn should survive with at least 1 char and end with "..."
+    tiny_results = [t for t in result if t.text.startswith("A")]
+    if tiny_results:
+        assert len(tiny_results[0].text) >= 1

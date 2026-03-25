@@ -1,0 +1,417 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>synapptic — dashboard</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            background: #0f172a;
+            color: #cbd5e1;
+            padding: 0;
+            line-height: 1.5;
+        }
+        .syn-nav { height: 48px; padding: 0 24px; border-bottom: 1px solid #1e293b; background: #0C1426; display: flex; align-items: center; gap: 20px; font-size: 14px; }
+        .syn-nav a { color: #94a3b8; text-decoration: none; }
+        .syn-nav a:hover { color: #cbd5e1; text-decoration: underline; }
+        .syn-nav .syn-active { color: #cbd5e1; cursor: default; text-decoration: none; font-weight: 600; }
+        .syn-logo { font-weight: 700; font-size: 22px; color: #e2e8f0; letter-spacing: -0.5px; margin-right: 16px; padding-right: 20px; border-right: 1px solid #1e293b; }
+        .dashboard-content { padding: 24px; }
+        h1 { font-size: 20px; font-weight: 600; color: #f8fafc; margin-bottom: 4px; }
+        .subtitle { font-size: 13px; color: #64748b; margin-bottom: 24px; }
+        .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin-bottom: 24px; }
+        .card {
+            background: #111827;
+            border: 1px solid #1e293b;
+            border-radius: 8px;
+            padding: 16px;
+        }
+        .card-label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: #64748b; margin-bottom: 4px; }
+        .card-value { font-size: 24px; font-weight: 600; color: #f8fafc; }
+        .card-value.cost { color: #fbbf24; }
+        .card-value.cache { color: #34d399; }
+        h2 { font-size: 14px; font-weight: 600; color: #94a3b8; margin-bottom: 12px; text-transform: uppercase; letter-spacing: 0.05em; }
+        table { width: 100%; border-collapse: collapse; font-size: 13px; }
+        thead th {
+            text-align: left;
+            padding: 8px 12px;
+            color: #64748b;
+            font-weight: 500;
+            font-size: 11px;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            border-bottom: 1px solid #1e293b;
+        }
+        tbody td {
+            padding: 8px 12px;
+            border-bottom: 1px solid #1e293b;
+            color: #cbd5e1;
+        }
+        .num { text-align: right; font-variant-numeric: tabular-nums; }
+        .model { color: #818cf8; font-weight: 500; }
+        .cost-cell { color: #fbbf24; }
+        .cache-cell { color: #34d399; }
+        .no-data { color: #475569; font-style: italic; padding: 24px; text-align: center; }
+        .status { font-size: 12px; color: #475569; margin-top: 16px; text-align: right; }
+        .status .dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: #22c55e; margin-right: 4px; }
+        .section { margin-bottom: 32px; }
+
+        /* Model row — clickable */
+        .model-row { cursor: pointer; }
+        .model-row:hover { background: #151d2e; }
+        .model-row td:first-child::before { content: '\25B6'; margin-right: 6px; font-size: 9px; color: #475569; }
+        .model-row.expanded td:first-child::before { content: '\25BC'; }
+
+        /* Request rows (nested under model) */
+        .req-row { background: #0d1117; cursor: pointer; }
+        .req-row:hover { background: #131a27; }
+        .req-row td { padding: 6px 12px; font-size: 12px; border-bottom: 1px solid #161e2e; }
+        .req-row td:first-child { padding-left: 32px; }
+
+        /* Message detail panel */
+        .detail-row td { padding: 0; background: #080c14; }
+        .detail-panel {
+            padding: 12px 16px 12px 32px;
+            max-height: 400px;
+            overflow-y: auto;
+        }
+        .msg { margin-bottom: 8px; }
+        .msg-role {
+            font-size: 10px;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            font-weight: 600;
+            margin-bottom: 2px;
+        }
+        .msg-role.user { color: #60a5fa; }
+        .msg-role.assistant { color: #34d399; }
+        .msg-role.system { color: #f472b6; }
+        .msg-role.tool { color: #fbbf24; }
+        .msg-content {
+            font-size: 12px;
+            color: #94a3b8;
+            white-space: pre-wrap;
+            word-break: break-word;
+            line-height: 1.4;
+            padding: 4px 8px;
+            background: #111827;
+            border-radius: 4px;
+            border-left: 2px solid #1e293b;
+        }
+        .response-label { font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em; font-weight: 600; color: #34d399; margin: 8px 0 2px; }
+        .sep { border-top: 1px dashed #1e293b; margin: 8px 0; }
+        .copy-btn {
+            position: sticky;
+            top: 0;
+            float: right;
+            background: #1e293b;
+            border: 1px solid #334155;
+            border-radius: 4px;
+            color: #94a3b8;
+            cursor: pointer;
+            padding: 3px 8px;
+            font-size: 11px;
+            line-height: 1;
+            z-index: 1;
+            transition: background 0.15s, color 0.15s;
+        }
+        .copy-btn:hover { background: #334155; color: #e2e8f0; }
+        .copy-btn.copied { background: #166534; color: #86efac; border-color: #22c55e; }
+    </style>
+</head>
+<body>
+    {{NAV}}
+    <div class="dashboard-content">
+    <h1>synapptic relay</h1>
+    <p class="subtitle">Real-time token usage monitoring</p>
+
+    <div class="cards">
+        <div class="card"><div class="card-label">Requests</div><div class="card-value" id="c-requests">-</div></div>
+        <div class="card"><div class="card-label">Input Tokens</div><div class="card-value" id="c-input">-</div></div>
+        <div class="card"><div class="card-label">Output Tokens</div><div class="card-value" id="c-output">-</div></div>
+        <div class="card"><div class="card-label">Cache Read</div><div class="card-value cache" id="c-cache-read">-</div></div>
+        <div class="card"><div class="card-label">Cache Create</div><div class="card-value cache" id="c-cache-create">-</div></div>
+        <div class="card"><div class="card-label">Est. Cost</div><div class="card-value cost" id="c-cost">-</div></div>
+    </div>
+
+    <div class="section">
+        <h2>Usage by Model</h2>
+        <table>
+            <thead>
+                <tr>
+                    <th>Model</th>
+                    <th class="num">Requests</th>
+                    <th class="num">Input</th>
+                    <th class="num">Output</th>
+                    <th class="num">Cache Read</th>
+                    <th class="num">Avg Latency</th>
+                    <th class="num">Est. Cost</th>
+                </tr>
+            </thead>
+            <tbody id="models-body">
+                <tr><td colspan="7" class="no-data">Waiting for requests...</td></tr>
+            </tbody>
+        </table>
+    </div>
+
+    <div class="status"><span class="dot"></span>Auto-refresh 5s | <span id="last-update">-</span></div>
+
+    <script>
+        let _allRequests = [];
+        let _expandedModels = new Set();
+        let _expandedRequests = new Set();
+        let _detailCache = {};
+        let _failCount = 0;
+
+        function fmt(n) {
+            if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + 'M';
+            if (n >= 1_000) return (n / 1_000).toFixed(1) + 'K';
+            return n.toString();
+        }
+
+        function shortModel(m) {
+            return m.replace('claude-', '').replace('-20250514', '').replace('-20251001', '');
+        }
+
+        function timeAgo(iso) {
+            const d = new Date(iso);
+            const now = new Date();
+            const diff = Math.floor((now - d) / 1000);
+            if (diff < 60) return diff + 's ago';
+            if (diff < 3600) return Math.floor(diff / 60) + 'm ago';
+            return d.toLocaleTimeString();
+        }
+
+        function esc(s) {
+            const d = document.createElement('div');
+            d.textContent = s;
+            return d.innerHTML;
+        }
+
+        function aggregateByModel(requests) {
+            const models = {};
+            for (const r of requests) {
+                const m = r.model || 'unknown';
+                if (!models[m]) {
+                    models[m] = { model: m, requests: 0, input_tokens: 0, output_tokens: 0,
+                        cache_read_tokens: 0, total_latency_ms: 0, total_cost: 0 };
+                }
+                const a = models[m];
+                a.requests++;
+                a.input_tokens += r.input_tokens || 0;
+                a.output_tokens += r.output_tokens || 0;
+                a.cache_read_tokens += r.cache_read_tokens || 0;
+                a.total_latency_ms += r.latency_ms || 0;
+                a.total_cost += r.estimated_cost_usd || 0;
+            }
+            return Object.values(models).sort((a, b) => b.total_cost - a.total_cost);
+        }
+
+        function toggleModel(model) {
+            if (_expandedModels.has(model)) _expandedModels.delete(model);
+            else _expandedModels.add(model);
+            render();
+        }
+
+        async function toggleRequest(reqId) {
+            if (_expandedRequests.has(reqId)) {
+                _expandedRequests.delete(reqId);
+                render();
+                return;
+            }
+            // Fetch detail if not cached
+            if (!_detailCache[reqId]) {
+                try {
+                    const res = await fetch('/dashboard/api/request/' + reqId);
+                    _detailCache[reqId] = await res.json();
+                } catch (e) {
+                    _detailCache[reqId] = { messages: [], response: '(error loading)' };
+                }
+            }
+            _expandedRequests.add(reqId);
+            render();
+        }
+
+        function copyDetail(reqId, btn) {
+            const d = _detailCache[reqId];
+            if (!d) return;
+            let text = '';
+            if (d.messages && d.messages.length) {
+                for (const msg of d.messages) {
+                    text += `[${(msg.role || '?').toUpperCase()}]\n${msg.content || ''}\n\n`;
+                }
+            }
+            if (d.response) {
+                text += `[RESPONSE]\n${d.response}\n`;
+            }
+            navigator.clipboard.writeText(text.trim()).then(() => {
+                btn.classList.add('copied');
+                btn.textContent = 'Copied';
+                setTimeout(() => { btn.classList.remove('copied'); btn.innerHTML = '&#x2398; Copy'; }, 1500);
+            });
+        }
+
+        function renderDetail(reqId) {
+            const d = _detailCache[reqId];
+            if (!d) return '';
+            let html = '<div class="detail-panel">';
+            html += `<button class="copy-btn" onclick="event.stopPropagation(); copyDetail(${reqId}, this)">&#x2398; Copy</button>`;
+
+            if (d.messages && d.messages.length) {
+                for (const msg of d.messages) {
+                    const role = msg.role || '?';
+                    const roleClass = ['user','assistant','system','tool'].includes(role) ? role : '';
+                    html += `<div class="msg">
+                        <div class="msg-role ${roleClass}">${esc(role)}</div>
+                        <div class="msg-content">${esc(msg.content || '')}</div>
+                    </div>`;
+                }
+            }
+
+            if (d.response) {
+                html += '<div class="sep"></div>';
+                html += '<div class="response-label">Response</div>';
+                html += `<div class="msg-content">${esc(d.response)}</div>`;
+            }
+
+            html += '</div>';
+            return html;
+        }
+
+        function render() {
+            const tbody = document.getElementById('models-body');
+            const reqs = _allRequests;
+            if (!reqs.length) {
+                tbody.innerHTML = '<tr><td colspan="7" class="no-data">Waiting for requests...</td></tr>';
+                return;
+            }
+
+            const models = aggregateByModel(reqs);
+            let html = '';
+
+            for (const m of models) {
+                const expanded = _expandedModels.has(m.model);
+                const avgLat = m.requests > 0 ? Math.round(m.total_latency_ms / m.requests) : 0;
+
+                html += `<tr class="model-row ${expanded ? 'expanded' : ''}" onclick="toggleModel('${m.model}')">
+                    <td class="model">${shortModel(m.model)}</td>
+                    <td class="num">${m.requests}</td>
+                    <td class="num">${fmt(m.input_tokens)}</td>
+                    <td class="num">${fmt(m.output_tokens)}</td>
+                    <td class="num cache-cell">${fmt(m.cache_read_tokens)}</td>
+                    <td class="num">${avgLat}ms</td>
+                    <td class="num cost-cell">$${m.total_cost.toFixed(2)}</td>
+                </tr>`;
+
+                if (expanded) {
+                    const modelReqs = reqs.filter(r => r.model === m.model);
+                    for (const r of modelReqs) {
+                        const reqExpanded = _expandedRequests.has(r.id);
+                        html += `<tr class="req-row" onclick="event.stopPropagation(); toggleRequest(${r.id})">
+                            <td>${timeAgo(r.timestamp)}</td>
+                            <td class="num">${r.message_count} msgs</td>
+                            <td class="num">${fmt(r.input_tokens)}</td>
+                            <td class="num">${fmt(r.output_tokens)}</td>
+                            <td class="num cache-cell">${fmt(r.cache_read_tokens)}</td>
+                            <td class="num">${Math.round(r.latency_ms)}ms</td>
+                            <td class="num cost-cell">$${r.estimated_cost_usd.toFixed(4)}</td>
+                        </tr>`;
+                        if (reqExpanded) {
+                            html += `<tr class="detail-row"><td colspan="7">${renderDetail(r.id)}</td></tr>`;
+                        }
+                    }
+                }
+            }
+
+            tbody.innerHTML = html;
+        }
+
+        function updateModelRowStats() {
+            // Update model row cells without rebuilding the DOM
+            const models = aggregateByModel(_allRequests);
+            const rows = document.querySelectorAll('.model-row');
+            for (const row of rows) {
+                const modelName = row.querySelector('.model')?.textContent;
+                if (!modelName) continue;
+                const m = models.find(x => shortModel(x.model) === modelName);
+                if (!m) continue;
+                const cells = row.querySelectorAll('td');
+                if (cells.length >= 7) {
+                    const avgLat = m.requests > 0 ? Math.round(m.total_latency_ms / m.requests) : 0;
+                    cells[1].textContent = m.requests;
+                    cells[2].textContent = fmt(m.input_tokens);
+                    cells[3].textContent = fmt(m.output_tokens);
+                    cells[4].textContent = fmt(m.cache_read_tokens);
+                    cells[5].textContent = avgLat + 'ms';
+                    cells[6].textContent = '$' + m.total_cost.toFixed(2);
+                }
+            }
+        }
+
+        async function refresh() {
+            try {
+                const res = await fetch('/dashboard/api/stats');
+                const data = await res.json();
+                const s = data.current_session;
+
+                if (s) {
+                    document.getElementById('c-requests').textContent = s.total_requests;
+                    document.getElementById('c-input').textContent = fmt(s.total_input_tokens);
+                    document.getElementById('c-output').textContent = fmt(s.total_output_tokens);
+                    document.getElementById('c-cache-read').textContent = fmt(s.total_cache_read_tokens);
+                    document.getElementById('c-cache-create').textContent = fmt(s.total_cache_creation_tokens);
+                    document.getElementById('c-cost').textContent = '$' + s.estimated_cost_usd.toFixed(2);
+                }
+
+                _allRequests = data.recent_requests || [];
+                // Don't rebuild the table while a detail panel is open — it resets scroll
+                if (_expandedRequests.size === 0) {
+                    render();
+                } else {
+                    // Just update the model row numbers in-place
+                    updateModelRowStats();
+                }
+
+                document.getElementById('last-update').textContent = new Date().toLocaleTimeString();
+                _failCount = 0;
+            } catch (e) {
+                _failCount++;
+                if (_failCount >= 2) {
+                    clearInterval(_refreshInterval);
+                    // Proxy is gone — close the window (works in app mode)
+                    window.close();
+                    // Fallback if window.close() is blocked (regular tab)
+                    document.querySelector('.status .dot').style.background = '#ef4444';
+                    document.getElementById('last-update').textContent = 'proxy stopped';
+                }
+            }
+        }
+
+        // Auto-shutdown disabled — relay lifecycle managed by CLI
+        // (synapptic relay stop / synapptic run exit cleanup)
+
+        refresh();
+        let _refreshInterval = setInterval(refresh, 5000);
+
+        // Heartbeat via fetch+ReadableStream — reader.read() resolves {done:true}
+        // instantly when proxy sends TCP FIN (timeout_graceful_shutdown=0)
+        (async () => {
+            try {
+                const res = await fetch('/dashboard/api/heartbeat');
+                const reader = res.body.getReader();
+                while (true) {
+                    const { done } = await reader.read();
+                    if (done) break;
+                }
+            } catch (e) {}
+            // Stream ended = proxy died
+            clearInterval(_refreshInterval);
+            document.title = 'session ended';
+            document.body.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:80vh;color:#475569;font-family:-apple-system,sans-serif;font-size:15px;">session ended — close this tab</div>';
+        })();
+    </script>
+    </div><!-- /dashboard-content -->
+</body>
+</html>

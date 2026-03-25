@@ -76,9 +76,14 @@ This loads automatically at session start. Your AI already knows the rules befor
 | **Claude Code** | `~/.claude/projects/*/memory/user_archetype.md` |
 | **Cursor** | `.cursor/rules/synapptic.mdc` |
 | **GitHub Copilot** | `.github/copilot-instructions.md` |
-| **Gemini** | `GEMINI.md` |
+| **Gemini Code Assist** | `.gemini/styleguide.md` |
+| **OpenAI Codex CLI** | `AGENTS.md` |
+| **Windsurf** | `.windsurfrules` |
+| **Cline** | `.clinerules` |
+| **Aider** | `CONVENTIONS.md` |
+| **Continue.dev** | `.continuerules` |
 
-Use one or all of them. **synapptic** writes to every target you configure - one command, all your tools stay in sync.
+Use one or all of them. **synapptic** writes to every target you configure - one command, all your tools stay in sync. Guards are filtered per model based on benchmark results - a guard marked redundant for Claude but effective for Gemini only appears in the Gemini output.
 
 ### Session sources
 
@@ -142,6 +147,8 @@ synapptic benchmark --judge-model sonnet              # separate judge model (av
 synapptic benchmark --temperature 0 --runs 5          # deterministic responses, 5 runs per test
 ```
 
+> **Note:** Using `--provider claude-cli` for benchmarking is possible but not recommended. Claude CLI reuses a session across all test runs, which means each run's token count includes all previous turns in the conversation — costs grow non-linearly and results become harder to interpret. Use a direct API provider (Anthropic, OpenAI, Ollama, Groq) for reliable, predictable benchmark costs.
+
 For each guard, the benchmark generates an adversarial scenario and compares two conditions:
 - **WITH**: full archetype including the tested guard
 - **WITHOUT**: full archetype with that guard removed
@@ -155,11 +162,7 @@ Benchmark: machine-be (8/10 testable, n=10)
   Baseline compliance: 63%  (95% CI: 31%–86%)*
   Guard impact:        +13% net (3 improved, 1 regressed)
 
-  ++ Effective (guard made it pass):    3
-  == Redundant (both pass):             3
-  -- Ineffective (both fail):           1
-  !! Backfire (guard made it worse):    1
-  ?? Untestable/unclear:                2
+  ++ 3    == 3    -- 1    !! 1    ?? 2
 
   Judge: 2 failures (2/60 = 3%) | Controls: COMPLY=OK, VIOLATE=OK
   * CI assumes independent tests (guards may be correlated)
@@ -182,6 +185,45 @@ synapptic guards excluded -p machine-be    # see excluded guards with reasons
 synapptic guards include 0 -p machine-be   # re-include by index
 synapptic synthesize -p machine-be         # regenerate archetype
 ```
+
+## See every conversation you've ever had
+
+Your AI coding sessions vanish the moment you close the terminal. **synapptic** brings them back — entirely on your machine.
+
+```bash
+pip install synapptic[relay]
+synapptic relay enable          # one-time setup
+synapptic index                 # recommended: index your sessions for instant search
+synapptic relay start
+```
+
+Open `http://localhost:5100/dashboard/` and every conversation you've ever had with Claude Code is there. Searchable. Readable. With full markdown rendering, collapsible tool calls, and token usage per turn. Context compactions are marked so you know exactly where the AI lost its thread.
+
+Nothing leaves your machine. The index lives in a local SQLite database. The server runs on localhost. Your sessions, your data, your eyes only.
+
+### Pair programming, finally visible
+
+Active sessions glow green and stream live via WebSocket. The indicator clears automatically when the session closes — no stale green dots. You code in the terminal — your pair watches the full conversation unfold on a second screen, formatted and navigable. No screen sharing. No "can you scroll up?" No squinting at terminal output. Just open the browser and follow along.
+
+Click any session — active or historical — to see its token usage and estimated cost, read directly from the JSONL conversation file. For active sessions running through the relay, the metrics bar updates live: requests, input/output tokens, cache usage, and estimated cost pushed via WebSocket, no polling.
+
+### One command to see everything
+
+```bash
+synapptic run claude                     # launch Claude through the relay
+synapptic run claude -r "my session"     # resume a session
+synapptic run cursor .                   # works with Cursor, Copilot, Aider, Codex, Windsurf
+```
+
+Your tool launches as normal. When you're done:
+
+```
+Session ended.
+  Requests: 47 | Input: 245.3k tok | Output: 12.1k tok
+  Cache: 180.2k read, 45.0k created
+```
+
+No cloud. No account. No configuration. Just `synapptic run` instead of `claude` and you see what your AI actually costs per session.
 
 ## Automatic background processing
 
@@ -254,6 +296,18 @@ synapptic results list --provider ollama                  # filter by provider
 synapptic results metrics                                 # token usage stats (Ollama)
 synapptic results compare <prov1> <model1> <prov2> <model2>  # compare two models
 
+# Relay + session browser
+synapptic relay enable              # configure the relay
+synapptic relay start               # start the server (foreground)
+synapptic relay start -d            # start as daemon
+synapptic relay stop                # stop the daemon
+synapptic relay status              # show status + daily token totals
+synapptic run claude                # launch tool through relay
+synapptic run claude -r "session"   # resume with all args passed through
+synapptic run cursor .              # any tool: cursor, copilot, aider, codex, windsurf
+synapptic index                     # index all sessions for search + fast browsing
+synapptic index --full              # re-index everything
+
 # Maintenance
 synapptic diff                      # changes since last version
 synapptic rollback                  # restore previous profile
@@ -277,12 +331,11 @@ synapptic uninstall                 # clean removal (asks before deleting data)
 │   │   ├── profile.yaml
 │   │   └── archetype.md
 │   └── ...
-├── benchmarks/              # test caches + results (single directory)
-│   ├── <project>_tests_seed42_sonnet_<hash>.json          # cached test cases (keyed by seed + model + guard hash)
-│   ├── <project>_<provider>_<model>_seed42_t0.1_<ts>.json # benchmark results
-│   └── ...
+├── benchmarks/              # test caches + results
 ├── profile_history/         # versioned snapshots for rollback
-└── token_metrics.jsonl      # Ollama token usage log (append-only)
+├── relay.db                 # session index + relay metrics (SQLite)
+├── relay.log                # relay daemon log
+└── token_metrics.jsonl      # token usage log (append-only)
 ```
 
 ## Clean uninstall
@@ -339,11 +392,10 @@ Found a bug or have a suggestion? [Open an issue](https://github.com/appcuarium/
 
 **Ideas that would make a real difference:**
 
-- **New session sources** - parsers for Cursor, Copilot, or Aider session logs
-- **New output targets** - writers for Windsurf, Cline, Continue.dev, or other tools
-- **Extraction patterns** - custom prompt.md patterns for security, performance, accessibility, or team-specific conventions
-- **Better slug derivation** - the project name detection from encoded paths could be smarter
-- **Tests** - extraction and synthesis modules need unit tests (benchmark, filter, and profile modules are covered)
+- **New session sources** — parsers for Cursor, Copilot, or Aider session logs
+- **Extraction patterns** — custom prompt.md patterns for security, performance, accessibility, or team-specific conventions
+- **Browser UI** — the session browser is functional but young. Better markdown rendering, keyboard navigation, session diffing
+- **Relay providers** — the relay currently supports Anthropic and OpenAI. Gemini, Groq, and local model relaying would be valuable
 
 **How to contribute:**
 
