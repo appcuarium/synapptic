@@ -4,11 +4,16 @@
 PIDFILE="/tmp/synapptic-hook.pid"
 LOGFILE="/tmp/synapptic-session-end.log"
 
+# The python3 on PATH may lack synapptic (e.g. Homebrew next to a conda install), and then the project
+# slug comes out empty and synthesize rebuilds every project. Use the interpreter in synapptic's shebang.
+PY=$(head -1 "$(command -v synapptic)" 2>/dev/null | sed -n 's/^#!//p')
+[ -x "$PY" ] || PY=python3
+
 # Read session info from stdin
 INPUT=$(cat)
-SESSION_ID=$(echo "$INPUT" | python3 -c "import json,sys; print(json.load(sys.stdin).get('session_id',''))" 2>/dev/null)
-REASON=$(echo "$INPUT" | python3 -c "import json,sys; print(json.load(sys.stdin).get('reason',''))" 2>/dev/null)
-PROJECT=$(echo "$INPUT" | python3 -c "
+SESSION_ID=$(echo "$INPUT" | "$PY" -c "import json,sys; print(json.load(sys.stdin).get('session_id',''))" 2>/dev/null)
+REASON=$(echo "$INPUT" | "$PY" -c "import json,sys; print(json.load(sys.stdin).get('reason',''))" 2>/dev/null)
+PROJECT=$(echo "$INPUT" | "$PY" -c "
 import json,sys
 from pathlib import Path
 d = json.load(sys.stdin)
