@@ -119,6 +119,18 @@ def extract_observations(
 
     Returns list of observation dicts with session_id and timestamp added.
     """
+    return try_extract_observations(filtered_turns, session_id, model, profile, config) or []
+
+
+def try_extract_observations(
+    filtered_turns: list[Turn],
+    session_id: str,
+    model: str = "sonnet",
+    profile: dict | None = None,
+    config: dict | None = None,
+) -> list[dict] | None:
+    """Like extract_observations, but returns None when the LLM call or its parsing failed,
+    so a failed session is not recorded as processed and is retried on the next run."""
     if not filtered_turns:
         return []
 
@@ -126,8 +138,15 @@ def extract_observations(
 
     raw_output = call_llm(prompt, config=config)
     if not raw_output:
-        return []
+        return None
+    return parse_observations(raw_output, session_id)
 
+
+def parse_observations(raw_output: str, session_id: str) -> list[dict] | None:
+    """Turn a model's extraction reply into validated observations; None if it is not a JSON array.
+
+    Shared by direct calls and Message Batches results, so both are parsed and validated the same way.
+    """
     # Parse JSON response — handle markdown fences if present
     json_text = extract_json(raw_output)
     try:
@@ -135,11 +154,11 @@ def extract_observations(
     except json.JSONDecodeError as e:
         print(f"Failed to parse extraction response as JSON: {e}", file=sys.stderr)
         print(f"Raw output:\n{raw_output[:500]}", file=sys.stderr)
-        return []
+        return None
 
     if not isinstance(observations, list):
         print(f"Expected JSON array, got {type(observations)}", file=sys.stderr)
-        return []
+        return None
 
     # Validate and enrich each observation
     now = datetime.now(timezone.utc).isoformat()

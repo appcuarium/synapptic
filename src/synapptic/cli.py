@@ -1,4 +1,4 @@
-"""Click CLI for synaptic."""
+"""Click CLI for synapptic."""
 
 import json
 import os
@@ -9,9 +9,18 @@ from pathlib import Path
 import click
 import yaml
 
-from synapptic.config import SYNAPPTIC_DIR
+from synapptic import providers
+from synapptic.config import CHECKPOINT_MIN_TOKENS, SYNAPPTIC_DIR, SYNTHESIZE_MIN_HOURS
+from synapptic.integrate import integrate_archetypes
+from synapptic.pipeline import checkpoint_session, rebuild_profiles
+from synapptic.relay import config as relay_settings
+from synapptic.synthesize import synthesize_archetype
 from synapptic.state import (
+    archetype_age_hours,
     ensure_dirs,
+    pipeline_lock,
+    remove_chunk_observations,
+    save_cursor,
     find_all_observations,
     find_session_transcripts,
     get_processed_session_ids,
@@ -38,7 +47,7 @@ def cli():
 
 @cli.group("config")
 def config_group():
-    """View and modify synaptic configuration."""
+    """View and modify synapptic configuration."""
     pass
 
 
@@ -65,17 +74,16 @@ def config_show():
     if api_url:
         click.echo(f"API URL:         {api_url}")
 
-    # Show Ollama settings if configured
-    if provider == "ollama":
-        num_ctx = config.get("ollama_num_ctx", "not set")
-        num_gpu = config.get("ollama_num_gpu", "not set")
-        temp = config.get("ollama_temperature", "not set")
-        top_p = config.get("ollama_top_p", "not set")
-        click.echo(f"Ollama settings:")
-        click.echo(f"  num_ctx:       {num_ctx}")
-        click.echo(f"  num_gpu:       {num_gpu}")
-        click.echo(f"  temperature:   {temp}")
-        click.echo(f"  top_p:         {top_p}")
+    # Connector settings this provider and model support: generic name, native parameter, value sent
+    sent = providers.native_params(provider, model, config)
+    supported = providers.connector_settings(provider, model)
+    if supported:
+        click.echo("Model settings:")
+        for name, spec in supported.items():
+            value = sent.get(spec["param"], "not sent")
+            source = "set" if name in config.get("settings", {}) else "default"
+            click.echo(f"  {name:18} -> {spec['param']:12} {value} ({source})")
+    click.echo(f"Batches:         {'available' if providers.provider_supports(provider, 'batches') else 'not available'}")
 
     click.echo(f"Config file:     ~/.synapptic/config.yaml")
 
@@ -116,11 +124,14 @@ def config_provider():
             click.echo(f"     {description}")
 
         click.echo()
+        # Keep the current model preselected while it is still offered; otherwise the provider's default
+        # (a model the provider retired was already replaced by the default when the config was loaded).
+        preselected = config.get("model") if config.get("model") in model_ids else default_model
         try:
             model_choice = click.prompt(
                 "Select model",
                 type=click.IntRange(1, len(available_models)),
-                default=model_ids.index(default_model) + 1
+                default=model_ids.index(preselected) + 1
             )
             config["model"] = model_ids[model_choice - 1]
         except (ValueError, IndexError):
@@ -146,6 +157,12 @@ def config_provider():
 
     save_config(config)
     click.echo(f"\nProvider set: {info['name']}, Model: {config['model']}")
+    click.echo("Testing the connection with one short call...")
+    reply = providers.call_llm("Reply with exactly: ok", config=config)
+    if reply:
+        click.echo(f"  Connection OK (model replied: {reply[:40]!r})")
+    else:
+        click.echo("  Connection FAILED - see the error above; fix it and run `synapptic config provider` again")
 
 
 @config_group.command("mode")
@@ -211,50 +228,52 @@ def config_ollama():
     choice = click.prompt("\nSelect preset", type=click.IntRange(1, len(preset_names)), default=default_idx)
     preset_name = preset_names[choice - 1]
 
+    # Stored under the generic connector names (config["settings"]); Ollama receives them as num_ctx etc.
+    settings = config.setdefault("settings", {})
     if preset_name != "custom":
         preset = presets[preset_name]
-        config["ollama_num_ctx"] = preset["num_ctx"]
-        config["ollama_temperature"] = preset["temp"]
-        config["ollama_top_p"] = preset["top_p"]
+        settings["context_window"] = preset["num_ctx"]
+        settings["temperature"] = preset["temp"]
+        settings["top_p"] = preset["top_p"]
         config["ollama_preset"] = preset_name
         click.echo(f"\nPreset '{preset_name}' applied")
     else:
         # Manual configuration
-        current_ctx = config.get("ollama_num_ctx", 65536)
+        current_ctx = settings.get("context_window", 65536)
         click.echo(f"\nContext window size (num_ctx)")
         click.echo(f"  Current: {current_ctx} tokens")
         click.echo(f"  Max available: 262144 (256k) for M2 Max with 96GB")
         num_ctx = click.prompt("  Set to", type=int, default=current_ctx)
-        config["ollama_num_ctx"] = num_ctx
+        settings["context_window"] = num_ctx
 
-        current_temp = config.get("ollama_temperature", 0.2)
+        current_temp = settings.get("temperature", 0.2)
         click.echo(f"\nTemperature (0.0=deterministic, 1.0=creative)")
         click.echo(f"  Current: {current_temp}")
         temperature = click.prompt("  Set to", type=float, default=current_temp)
-        config["ollama_temperature"] = temperature
+        settings["temperature"] = temperature
 
-        current_p = config.get("ollama_top_p", 0.9)
+        current_p = settings.get("top_p", 0.9)
         click.echo(f"\nTop-p (nucleus sampling, 0.0-1.0)")
         click.echo(f"  Current: {current_p}")
         top_p = click.prompt("  Set to", type=float, default=current_p)
-        config["ollama_top_p"] = top_p
+        settings["top_p"] = top_p
         config["ollama_preset"] = "custom"
 
     # num_gpu (always ask)
-    current_gpu = config.get("ollama_num_gpu", 99)
+    current_gpu = settings.get("gpu_layers", 99)
     click.echo(f"\nGPU layer offload (num_gpu)")
     click.echo(f"  Current: {current_gpu}")
     click.echo(f"  Recommended: 99 (max, all layers on Metal GPU)")
     num_gpu = click.prompt("  Set to", type=int, default=current_gpu)
-    config["ollama_num_gpu"] = num_gpu
+    settings["gpu_layers"] = num_gpu
 
     save_config(config)
     click.echo(f"\nOllama settings saved:")
     click.echo(f"  preset:       {config.get('ollama_preset', 'custom')}")
-    click.echo(f"  num_ctx:      {config['ollama_num_ctx']}")
-    click.echo(f"  num_gpu:      {config['ollama_num_gpu']}")
-    click.echo(f"  temperature:  {config['ollama_temperature']}")
-    click.echo(f"  top_p:        {config['ollama_top_p']}")
+    click.echo(f"  num_ctx:      {settings['context_window']}")
+    click.echo(f"  num_gpu:      {settings['gpu_layers']}")
+    click.echo(f"  temperature:  {settings['temperature']}")
+    click.echo(f"  top_p:        {settings['top_p']}")
 
 
 @config_group.command("outputs")
@@ -374,8 +393,14 @@ def patterns_use(name):
 @click.option("--min-lines", default=20, help="Skip transcripts with fewer lines than this")
 def extract(session, extract_all, max_tokens, model, min_lines):
     """Extract observations from session transcripts (Tier 1)."""
+    with pipeline_lock(wait=True):
+        run_extract(session, extract_all, max_tokens, model, min_lines)
+
+
+def run_extract(session, extract_all, max_tokens, model, min_lines):
+    """The extract command, run while holding the pipeline lock."""
     from synapptic.filter import filter_transcript
-    from synapptic.extract import extract_observations
+    from synapptic.extract import try_extract_observations
     from synapptic.profile import route_observations
     from synapptic.providers import load_config
 
@@ -414,7 +439,8 @@ def extract(session, extract_all, max_tokens, model, min_lines):
             continue
 
         path, project_slug = transcripts[sid]
-        size_mb = path.stat().st_size / 1024 / 1024
+        size_bytes = path.stat().st_size
+        size_mb = size_bytes / 1024 / 1024
         click.echo(f"  {sid[:8]}... [{project_slug}] ({size_mb:.1f}MB)", nl=False)
 
         line_count = count_lines(path)
@@ -437,11 +463,14 @@ def extract(session, extract_all, max_tokens, model, min_lines):
         project_profile = load_profile(project_slug=project_slug)
         combined_profile = merge_profiles_for_context(global_profile, project_profile) if has_profile else None
 
-        observations = extract_observations(
+        observations = try_extract_observations(
             turns, sid,
             profile=combined_profile,
             config=llm_config,
         )
+        if observations is None:
+            click.echo(" → extraction failed, will retry on the next run")
+            continue
 
         # Tag each observation with its project
         for obs in observations:
@@ -452,6 +481,8 @@ def extract(session, extract_all, max_tokens, model, min_lines):
 
         # Save under the project (all observations stored per-project for traceability)
         save_observations(sid, observations, project_slug=project_slug)
+        remove_chunk_observations(sid)
+        save_cursor(sid, size_bytes)
 
         total_observations += len(observations)
         g = len(global_obs)
@@ -496,69 +527,27 @@ def profile(project, global_only):
 
 
 @cli.command()
-@click.option("--decay", default=0.95, help="Decay factor for existing preferences")
+@click.option("--decay", default=0.95, help="Ignored since 0.1.0b6: decay is time-based (last seen vs now)")
 def merge(decay):
-    """Merge all observations into global + per-project profiles (Tier 2).
+    """Rebuild global + per-project profiles from every observation file (Tier 2).
 
     Uses find_all_observations() to discover observations with their embedded
-    project_slug — does not depend on transcript files still existing.
-    Only merges sessions not already in the profile's sources.
+    project_slug — does not depend on transcript files still existing. Each observation
+    counts once however often merge runs, so a hook and a manual ingest cannot double-count.
     """
-    from synapptic.profile import merge_observations, route_observations, promote_to_global
+    echo_rebuilt(rebuild_profiles())
 
-    # Collect already-merged session IDs from existing profiles
-    all_merged = set()
-    for p in [load_profile(project_slug=None)] + [load_profile(project_slug=s) for s in list_projects()]:
-        for prefs in p.get("dimensions", {}).values():
-            for pref in prefs:
-                all_merged.update(pref.get("sources", []))
 
-    # Load all observations, skipping already-merged and empty
-    project_observations = {}
-    global_observations = []
-    new_session_count = 0
-
-    for session_id, slug, obs_list in find_all_observations():
-        if session_id in all_merged:
-            continue
-        new_session_count += 1
-
-        global_obs, project_obs = route_observations(obs_list)
-        global_observations.extend(global_obs)
-
-        if slug and project_obs:
-            project_observations.setdefault(slug, []).extend(project_obs)
-
-    if not global_observations and not project_observations:
+def echo_rebuilt(changed: list[str | None]):
+    """Report which profiles a rebuild changed, with their version and preference count."""
+    if not changed:
         click.echo("No new observations to merge.")
         return
-
-    click.echo(f"Merging {new_session_count} new session(s)")
-
-    # Merge global
-    if global_observations:
-        existing = load_profile(project_slug=None)
-        updated = merge_observations(existing, global_observations, decay_factor=decay)
-        save_profile(updated, project_slug=None)
-        n = sum(len(v) for v in updated.get("dimensions", {}).values())
-        click.echo(f"Global: v{updated['metadata']['profile_version']}, {n} preferences")
-
-    # Merge per-project
-    for slug, obs_list in project_observations.items():
-        existing = load_profile(project_slug=slug)
-        updated = merge_observations(existing, obs_list, decay_factor=decay)
-        save_profile(updated, project_slug=slug)
-        n = sum(len(v) for v in updated.get("dimensions", {}).values())
-        click.echo(f"[{slug}]: v{updated['metadata']['profile_version']}, {n} preferences")
-
-    # Promote cross-project observations to global
-    project_profiles = {slug: load_profile(project_slug=slug) for slug in list_projects()}
-    global_profile = load_profile(project_slug=None)
-    promotions = promote_to_global(project_profiles, global_profile)
-    if promotions:
-        click.echo(f"\nPromoting {len(promotions)} cross-project observations to global")
-        updated = merge_observations(global_profile, promotions, decay_factor=1.0)
-        save_profile(updated, project_slug=None)
+    for slug in changed:
+        rebuilt = load_profile(project_slug=slug)
+        n = sum(len(v) for v in rebuilt.get("dimensions", {}).values())
+        label = f"[{slug}]" if slug else "Global"
+        click.echo(f"{label}: v{rebuilt['metadata']['profile_version']}, {n} preferences")
 
 
 @cli.command()
@@ -641,7 +630,7 @@ def archetype(project):
 @click.option("--temperature", type=float, default=0.1, help="Temperature for response generation (0=deterministic, default=0.1)")
 @click.option("--judge-provider", default=None, help="Separate provider for LLM judge (avoids self-evaluation)")
 @click.option("--judge-model", default=None, help="Separate model for LLM judge (avoids self-evaluation)")
-@click.option("--batch/--no-batch", default=True, help="Batch all scenarios in fewer LLM calls (default: on)")
+@click.option("--batch/--no-batch", default=False, help="Batch all scenarios in fewer LLM calls (default: off)")
 @click.option("--chunks", type=int, default=0, help="Force N chunks per run (0=auto from TPM limits)")
 def benchmark(project, max_guards, provider, model, verbose, seed, refresh, runs, flush_tests, flush_results, flush_all, temperature, judge_provider, judge_model, batch, chunks):
     """Test whether guards are holding with adversarial scenarios."""
@@ -998,9 +987,15 @@ def guards_include(indices, project):
 @click.option("--limit", "-n", default=0, type=int, help="Max sessions to process (0 = all)")
 def ingest(model, max_tokens, project, min_lines, limit):
     """Full pipeline: extract → merge → synthesize → integrate."""
+    with pipeline_lock(wait=True):
+        run_ingest(model, max_tokens, project, min_lines, limit)
+
+
+def run_ingest(model, max_tokens, project, min_lines, limit):
+    """The ingest pipeline, run while holding the pipeline lock."""
     from synapptic.filter import filter_transcript
-    from synapptic.extract import extract_observations
-    from synapptic.profile import merge_observations, route_observations, promote_to_global
+    from synapptic.extract import try_extract_observations
+    from synapptic.profile import route_observations
     from synapptic.synthesize import synthesize_archetype as do_synthesize
     from synapptic.integrate import integrate_archetypes
     from synapptic.providers import load_config
@@ -1034,8 +1029,6 @@ def ingest(model, max_tokens, project, min_lines, limit):
         click.echo(f"Profile-aware extraction ({n} global preferences)")
 
     # Step 2: Extract + route
-    all_global_obs = []
-    all_project_obs = {}  # slug -> list[obs]
     extracted_count = 0
 
     for sid in unprocessed:
@@ -1043,7 +1036,8 @@ def ingest(model, max_tokens, project, min_lines, limit):
             break
 
         path, slug = transcripts[sid]
-        size_mb = path.stat().st_size / 1024 / 1024
+        size_bytes = path.stat().st_size
+        size_mb = size_bytes / 1024 / 1024
         click.echo(f"  {sid[:8]}... [{slug}] ({size_mb:.1f}MB)", nl=False)
 
         line_count = count_lines(path)
@@ -1061,45 +1055,27 @@ def ingest(model, max_tokens, project, min_lines, limit):
         project_profile = load_profile(project_slug=slug)
         combined = merge_profiles_for_context(global_profile, project_profile) if has_profile else None
 
-        observations = extract_observations(turns, sid, profile=combined, config=llm_config)
+        observations = try_extract_observations(turns, sid, profile=combined, config=llm_config)
+        if observations is None:
+            click.echo(" → extraction failed, will retry on the next run")
+            continue
 
         for obs in observations:
             obs["project"] = slug
 
         global_obs, project_obs = route_observations(observations)
-        all_global_obs.extend(global_obs)
-        all_project_obs.setdefault(slug, []).extend(project_obs)
 
         save_observations(sid, observations, project_slug=slug)
+        remove_chunk_observations(sid)
+        save_cursor(sid, size_bytes)
         extracted_count += 1
         click.echo(f" → {len(observations)} obs ({len(global_obs)}g/{len(project_obs)}p)")
 
     clear_queue()
 
-    # Step 3: Merge
+    # Step 3: Merge (rebuilt from every observation file, so nothing is counted twice)
     click.echo(f"\nStep 2: Merging")
-    if all_global_obs:
-        gp = load_profile(project_slug=None)
-        gp = merge_observations(gp, all_global_obs)
-        save_profile(gp, project_slug=None)
-        n = sum(len(v) for v in gp.get("dimensions", {}).values())
-        click.echo(f"  Global: {n} preferences")
-
-    for slug, obs_list in all_project_obs.items():
-        pp = load_profile(project_slug=slug)
-        pp = merge_observations(pp, obs_list)
-        save_profile(pp, project_slug=slug)
-        n = sum(len(v) for v in pp.get("dimensions", {}).values())
-        click.echo(f"  [{slug}]: {n} preferences")
-
-    # Promote cross-project patterns
-    project_profiles = {s: load_profile(project_slug=s) for s in list_projects()}
-    gp = load_profile(project_slug=None)
-    promotions = promote_to_global(project_profiles, gp)
-    if promotions:
-        click.echo(f"  Promoted {len(promotions)} observations to global")
-        gp = merge_observations(gp, promotions, decay_factor=1.0)
-        save_profile(gp, project_slug=None)
+    echo_rebuilt(rebuild_profiles())
 
     # Step 4: Synthesize
     click.echo("\nStep 3: Synthesizing")
@@ -1123,10 +1099,72 @@ def ingest(model, max_tokens, project, min_lines, limit):
     # Step 5: Integrate
     click.echo("\nStep 4: Integrating")
     updated = integrate_archetypes(project_slugs=[project] if project else None)
-    for slug, target, path in updated:
-        click.echo(f"  [{slug}] → {target}: {path}")
+    for entry in updated:
+        if len(entry) >= 5:
+            slug, target, path, target_model, excluded_count = entry
+            model_info = f" model={target_model}" if target_model else ""
+            excluded_info = f" excluded={excluded_count}" if excluded_count else ""
+            click.echo(f"  [{slug}] → {target}: {path}{model_info}{excluded_info}")
+        else:
+            slug, target, path = entry
+            click.echo(f"  [{slug}] → {target}: {path}")
 
     click.echo("\nDone.")
+
+
+@cli.command()
+@click.option("--project", "-p", help="Only integrate this project")
+def integrate(project):
+    """Write archetypes to the configured output targets (Tier 3 -> memory)."""
+    updated = integrate_archetypes(project_slugs=[project] if project else None)
+    for slug, target, path, target_model, excluded_count in updated:
+        model_info = f" model={target_model}" if target_model else ""
+        excluded_info = f" excluded={excluded_count}" if excluded_count else ""
+        click.echo(f"  [{slug}] → {target}: {path}{model_info}{excluded_info}")
+    if not updated:
+        click.echo("Nothing to integrate (no archetype or no memory directory).")
+
+
+@cli.command()
+@click.option("--session", "-s", required=True, help="Session UUID to checkpoint")
+@click.option("--flush", is_flag=True, help="Take everything up to the end of the transcript (PreCompact, SessionEnd)")
+@click.option("--min-tokens", default=CHECKPOINT_MIN_TOKENS, help="Without --flush, wait until this much new conversation exists")
+@click.option("--max-tokens", default=50_000, help="Conversation per chunk sent to the model")
+@click.option("--synthesize-after", default=SYNTHESIZE_MIN_HOURS, type=float,
+              help="Re-synthesize a changed archetype only if older than this many hours (-1: never)")
+def checkpoint(session, flush, min_tokens, max_tokens, synthesize_after):
+    """Extract what a live session added since its last checkpoint, in chunks, then rebuild the profiles."""
+    transcripts = find_session_transcripts()
+    if session not in transcripts:
+        click.echo(f"Session {session[:8]}... not found")
+        return
+    path, slug = transcripts[session]
+    llm_config = providers.load_config()
+    with pipeline_lock(wait=flush) as held:
+        if not held:
+            click.echo(f"{session[:8]}... another extraction is running; the next checkpoint picks this up")
+            return
+        context = merge_profiles_for_context(load_profile(project_slug=None), load_profile(project_slug=slug))
+        report = checkpoint_session(session, path, slug, flush, max_tokens, min_tokens, llm_config,
+                                    profile=context if context.get("dimensions") else None)
+        click.echo(f"{session[:8]}... [{slug}] bytes {report['start']}-{report['cursor']}: "
+                   f"{report['chunks']} chunk(s), {report['observations']} obs"
+                   + (" (extraction failed, will retry)" if report["failed"] else ""))
+        changed = rebuild_profiles() if report["chunks"] else []
+        if changed:
+            echo_rebuilt(changed)
+    # The throttle applies to every checkpoint, PreCompact flushes included: a long session compacts several
+    # times a day, and each re-synthesis costs a model call. Session end synthesizes in its own step.
+    due = [label for label in changed if label in (None, slug)
+           and synthesize_after >= 0 and archetype_age_hours(label) >= synthesize_after]
+    for label in due:
+        narrative = synthesize_archetype(load_profile(project_slug=label), config=llm_config)
+        if narrative:
+            save_archetype(narrative, project_slug=label)
+            click.echo(f"  {'[' + label + ']' if label else 'Global'} archetype: {len(narrative)} chars")
+    if due:
+        for entry in integrate_archetypes(project_slugs=[slug]):
+            click.echo(f"  [{entry[0]}] → {entry[1]}: {entry[2]}")
 
 
 @cli.command()
@@ -1150,15 +1188,15 @@ def rollback():
     previous = history[1]
     click.echo(f"Rolling back global to: {previous.name}")
     shutil.copy2(previous, GLOBAL_DIR / "profile.yaml")
-    click.echo("Done. Run 'synaptic synthesize' to regenerate archetypes.")
+    click.echo("Done. Run 'synapptic synthesize' to regenerate archetypes.")
 
 
 @cli.command()
-@click.confirmation_option(prompt="Delete all synaptic state and start fresh?")
+@click.confirmation_option(prompt="Delete all synapptic state and start fresh?")
 def reset():
-    """Delete all synaptic state and start fresh."""
+    """Delete all synapptic state and start fresh."""
     reset_all()
-    click.echo("All synaptic state deleted. Starting fresh.")
+    click.echo("All synapptic state deleted. Starting fresh.")
 
 
 @cli.command()
@@ -1204,6 +1242,40 @@ def stats():
         click.echo(f"  {slug}: {count}")
 
 
+# Claude Code hook events synapptic registers, and the bundled script each one runs.
+HOOK_REGISTRATIONS = (
+    ("SessionEnd", "synapptic-session-end.sh"),
+    ("Stop", "synapptic-checkpoint.sh"),
+    ("PreCompact", "synapptic-checkpoint.sh"),
+)
+
+
+def register_hook(hooks: dict, event: str, script: str) -> bool:
+    """Add `script` to settings.json hooks[event] unless already there. Returns True if added."""
+    entries = hooks.get(event)
+    if not isinstance(entries, list):
+        entries = []
+        hooks[event] = entries
+    if any(script in h.get("command", "") for entry in entries if isinstance(entry, dict)
+           for h in entry.get("hooks", [])):
+        return False
+    entries.append({"matcher": "*", "hooks": [{"type": "command", "command": f"~/.claude/hooks/{script}"}]})
+    return True
+
+
+def unregister_hook(hooks: dict, event: str, script: str) -> bool:
+    """Remove every hooks[event] entry that runs `script`. Returns True if one was removed."""
+    entries = hooks.get(event, [])
+    if not isinstance(entries, list):
+        return False
+    kept = [entry for entry in entries
+            if not isinstance(entry, dict) or not any(script in h.get("command", "") for h in entry.get("hooks", []))]
+    if len(kept) == len(entries):
+        return False
+    hooks[event] = kept
+    return True
+
+
 @cli.command("install")
 def install_cmd():
     """Set up skill, hook, and settings.json registration."""
@@ -1222,16 +1294,17 @@ def install_cmd():
     shutil.copy2(str(skill_src), str(skills_dir / "SKILL.md"))
     click.echo(f"  Done: {skills_dir}/")
 
-    # 2. Hook script
-    click.echo("[2/3] Installing SessionEnd hook...")
+    # 2. Hook scripts
+    click.echo("[2/3] Installing hooks (SessionEnd, Stop, PreCompact)...")
     hooks_dir.mkdir(parents=True, exist_ok=True)
-    hook_dst = hooks_dir / "synapptic-session-end.sh"
-    shutil.copy2(str(bundle / "hooks" / "synapptic-session-end.sh"), str(hook_dst))
-    hook_dst.chmod(0o755)
-    click.echo(f"  Done: {hook_dst}")
+    for script in sorted({script for _, script in HOOK_REGISTRATIONS}):
+        hook_dst = hooks_dir / script
+        shutil.copy2(str(bundle / "hooks" / script), str(hook_dst))
+        hook_dst.chmod(0o755)
+        click.echo(f"  Done: {hook_dst}")
 
     # 3. Register in settings.json
-    click.echo("[3/3] Registering hook in settings.json...")
+    click.echo("[3/3] Registering hooks in settings.json...")
     settings = load_settings_json(settings_path)
     if settings is None:
         click.echo("  Failed to read settings.json — skipping hook registration")
@@ -1240,33 +1313,16 @@ def install_cmd():
         if not isinstance(hooks, dict):
             hooks = {}
             settings["hooks"] = hooks
-        session_end = hooks.get("SessionEnd")
-        if not isinstance(session_end, list):
-            session_end = []
-            hooks["SessionEnd"] = session_end
-
-        already = any(
-            "synapptic-session-end" in h.get("command", "")
-            for entry in session_end
-            if isinstance(entry, dict)
-            for h in entry.get("hooks", [])
-        )
-        if already:
-            click.echo("  Already registered")
-        else:
-            session_end.append({
-                "matcher": "*",
-                "hooks": [{
-                    "type": "command",
-                    "command": "~/.claude/hooks/synapptic-session-end.sh",
-                }],
-            })
+        added = [event for event, script in HOOK_REGISTRATIONS if register_hook(hooks, event, script)]
+        if added:
             save_settings_json(settings_path, settings)
-            click.echo("  Done")
+            click.echo(f"  Done: {', '.join(added)}")
+        else:
+            click.echo("  Already registered")
 
     ensure_dirs()
     click.echo()
-    click.echo("Installed. Run 'synaptic update' to process existing sessions.")
+    click.echo("Installed. Run 'synapptic ingest' to process existing sessions.")
 
 
 @cli.command("uninstall")
@@ -1276,41 +1332,31 @@ def uninstall_cmd():
     skills_dir = claude_dir / "skills" / "synapptic"
     hooks_dir = claude_dir / "hooks"
     settings_path = claude_dir / "settings.json"
-    synaptic_state = claude_dir / "synaptic"
+    synaptic_state = SYNAPPTIC_DIR
 
-    # 1. Remove hook from settings.json
-    click.echo("[1/4] Removing hook from settings.json...")
+    # 1. Remove hooks from settings.json
+    click.echo("[1/4] Removing hooks from settings.json...")
     settings = load_settings_json(settings_path)
     if settings is None:
         click.echo("  Could not read settings.json")
     else:
         hooks = settings.get("hooks", {})
-        session_end = hooks.get("SessionEnd", [])
-        if isinstance(session_end, list):
-            filtered = [
-                entry for entry in session_end
-                if not isinstance(entry, dict) or not any(
-                    "synapptic-session-end" in h.get("command", "")
-                    for h in entry.get("hooks", [])
-                )
-            ]
-            if len(filtered) < len(session_end):
-                hooks["SessionEnd"] = filtered
-                save_settings_json(settings_path, settings)
-                click.echo("  Removed")
-            else:
-                click.echo("  Not found (already clean)")
+        removed = [event for event, script in HOOK_REGISTRATIONS if unregister_hook(hooks, event, script)]
+        if removed:
+            save_settings_json(settings_path, settings)
+            click.echo(f"  Removed: {', '.join(removed)}")
         else:
             click.echo("  Not found (already clean)")
 
-    # 2. Remove hook script
-    click.echo("[2/4] Removing hook script...")
-    hook_path = hooks_dir / "synapptic-session-end.sh"
-    if hook_path.exists():
-        hook_path.unlink()
-        click.echo(f"  Removed {hook_path}")
-    else:
-        click.echo("  Not found (already clean)")
+    # 2. Remove hook scripts
+    click.echo("[2/4] Removing hook scripts...")
+    for script in sorted({script for _, script in HOOK_REGISTRATIONS}):
+        hook_path = hooks_dir / script
+        if hook_path.exists():
+            hook_path.unlink()
+            click.echo(f"  Removed {hook_path}")
+        else:
+            click.echo(f"  {script}: not found (already clean)")
 
     # 3. Remove skill
     click.echo("[3/4] Removing skill...")
@@ -1360,7 +1406,7 @@ def uninstall_cmd():
         project_count = len(list((synaptic_state / "projects").iterdir())) if (synaptic_state / "projects").exists() else 0
         hist_count = len(list((synaptic_state / "profile_history").glob("*.yaml"))) if (synaptic_state / "profile_history").exists() else 0
 
-        click.echo("Artifacts created by synaptic:")
+        click.echo("Artifacts created by synapptic:")
         click.echo(f"  {obs_count} session observation(s)")
         click.echo(f"  {project_count} project profile(s)")
         click.echo(f"  {hist_count} history snapshot(s)")
@@ -1375,7 +1421,7 @@ def uninstall_cmd():
         click.echo("No artifacts found.")
 
     click.echo()
-    click.echo("Uninstall complete. Run 'pip uninstall synaptic' to remove the package.")
+    click.echo("Uninstall complete. Run 'pip uninstall synapptic' to remove the package.")
 
 
 # ---------------------------------------------------------------------------
@@ -1584,7 +1630,7 @@ def relay_status():
         click.echo("Relay: not running")
 
     # Show daily totals from SQLite if available
-    db_path = Path.home() / ".synapptic" / "relay.db"
+    db_path = relay_settings.DB_PATH
     if db_path.exists():
         try:
             from synapptic.relay.store import MetricsStore
@@ -1791,7 +1837,7 @@ def run_tool(ctx, tool):
 
     # Print token summary
     click.echo()
-    db_path = Path.home() / ".synapptic" / "relay.db"
+    db_path = relay_settings.DB_PATH
     if db_path.exists():
         try:
             from synapptic.relay.store import MetricsStore

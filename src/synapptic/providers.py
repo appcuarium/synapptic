@@ -10,6 +10,7 @@ Supports multiple backends for the extraction and synthesis LLM calls:
 """
 
 import json
+import os
 import re
 import subprocess
 import sys
@@ -18,6 +19,7 @@ from collections import deque
 from datetime import datetime
 from pathlib import Path
 
+import anthropic
 import yaml
 
 
@@ -254,6 +256,32 @@ def reset_claude_session():
     _last_claude_session_id = None
 
 
+# Connector settings: one generic name per setting, stored once in config["settings"]. Each provider (and,
+# where a model differs, each model) maps a generic name to its native parameter, with the default it uses.
+# A setting a provider or model does not support is simply absent, so it is never sent.
+GENERIC_SETTINGS = {
+    "temperature": "Randomness of the reply (0 = deterministic)",
+    "top_p": "Nucleus sampling cut-off (0-1)",
+    "max_output_tokens": "Longest reply the model may write, in tokens",
+    "context_window": "Context the local model loads, in tokens",
+    "gpu_layers": "Model layers placed on the GPU",
+}
+# Earlier versions stored Ollama's settings under these keys; load_config moves them to config["settings"].
+LEGACY_SETTING_KEYS = {
+    "ollama_temperature": "temperature",
+    "ollama_top_p": "top_p",
+    "ollama_num_predict": "max_output_tokens",
+    "ollama_num_ctx": "context_window",
+    "ollama_num_gpu": "gpu_layers",
+}
+# Anthropic API output cap per call (extraction JSON and archetypes fit well inside).
+ANTHROPIC_MAX_TOKENS = 16_000
+OPENAI_COMPATIBLE_SETTINGS = {
+    "temperature": {"param": "temperature", "default": None},
+    "top_p": {"param": "top_p", "default": None},
+    "max_output_tokens": {"param": "max_tokens", "default": 4096},
+}
+
 PROVIDERS = {
     "claude-cli": {
         "name": "Claude CLI",
@@ -264,33 +292,43 @@ PROVIDERS = {
         "models": [
             ("sonnet", "Claude Sonnet (balanced, recommended)"),
             ("opus", "Claude Opus (most capable)"),
+            ("fable", "Claude Fable (most capable, highest usage)"),
             ("haiku", "Claude Haiku (fast, small)"),
         ],
     },
     "anthropic": {
         "name": "Anthropic API",
-        "description": "Direct API calls (requires ANTHROPIC_API_KEY)",
+        "description": "Claude API through the official SDK (API key; billed per token)",
         "requires_key": True,
         "requires_url": False,
-        "default_model": "claude-sonnet-4-20250514",
+        "default_model": "claude-sonnet-5-5",
         "models": [
-            ("claude-sonnet-4-20250514", "Claude Sonnet (balanced, recommended)"),
-            ("claude-opus-4-20250805", "Claude Opus (most capable)"),
-            ("claude-haiku-4-5-20251001", "Claude Haiku (fast, small)"),
+            ("claude-sonnet-5-5", "Claude Sonnet 5.5 ($2 / $10 per M tokens, recommended)"),
+            ("claude-opus-5-5", "Claude Opus 5.5 ($4 / $20 per M tokens)"),
+            ("claude-fable-5-1", "Claude Fable 5.1 ($10 / $50 per M tokens, most capable)"),
+            ("claude-haiku-5-5", "Claude Haiku 5.5 ($0.10 / $0.50 per M tokens, fast, small)"),
+            ("claude-haiku-4-5", "Claude Haiku 4.5 ($1 / $5 per M tokens, previous generation)"),
         ],
+        # Shut down by Anthropic (Opus 4 and Sonnet 4 on 2026-06-15): a saved selection falls back to the default.
+        "retired": ["claude-sonnet-4-20250514", "claude-opus-4-20250805"],
+        # Same model, current ID: a saved selection is carried over.
+        "renamed": {"claude-haiku-4-5-20251001": "claude-haiku-4-5"},
     },
     "openai": {
         "name": "OpenAI API",
         "description": "OpenAI-compatible API (requires OPENAI_API_KEY)",
         "requires_key": True,
         "requires_url": False,
-        "default_model": "gpt-4o",
+        "default_model": "gpt-6.1-sol",
         "models": [
-            ("gpt-4o", "GPT-4o (latest, recommended)"),
-            ("gpt-4-turbo", "GPT-4 Turbo"),
-            ("gpt-4", "GPT-4"),
-            ("gpt-3.5-turbo", "GPT-3.5 Turbo (fast, cheap)"),
+            ("gpt-6.1-sol", "GPT-6.1 Sol ($2 / $10 per M tokens, balanced, recommended)"),
+            ("gpt-6-astra", "GPT-6 Astra ($10 / $50 per M tokens, flagship)"),
+            ("gpt-6.1-terra", "GPT-6.1 Terra ($1 / $5 per M tokens, fast)"),
+            ("gpt-6-luna", "GPT-6 Luna ($0.10 / $0.50 per M tokens, smallest)"),
+            ("gpt-4o", "GPT-4o (deprecated, shuts down 2027-01-14)"),
         ],
+        # Shut down by OpenAI on 2026-10-23 (developers.openai.com/api/docs/deprecations).
+        "retired": ["gpt-4-turbo", "gpt-4", "gpt-3.5-turbo"],
     },
     "ollama": {
         "name": "Ollama (local)",
@@ -301,10 +339,14 @@ PROVIDERS = {
         "default_url": "http://localhost:11434/v1",
         "models": [
             ("qwen3-coder-next:q4_K_M", "Qwen 3 Coder Next (coding-optimized, recommended)"),
+            ("qwen3.5:35b-a3b-q4_K_M", "Qwen 3.5 35B-A3B (MoE, 3B active, 262K ctx)"),
             ("qwen2.5:72b-instruct-q4_K_M", "Qwen 2.5 72B (Q4)"),
             ("llama3.3:70b-instruct-q4_K_M", "Llama 3.3 70B (Q4)"),
             ("gemma3:27b", "Gemma 3 27B"),
             ("deepseek-r1:70b", "DeepSeek R1 70B"),
+            ("qwen3.8:27b-q4_K_M", "Qwen 3.8 27B (Q4, 18GB, 256K ctx, newest)"),
+            ("qwen3.6:35b-a3b-q4_K_M", "Qwen 3.6 35B-A3B (MoE, Q4, 24GB, 256K ctx)"),
+            ("gemma4:26b-a4b-it-q4_K_M", "Gemma 4 26B-A4B (MoE, Q4, 18GB, 256K ctx)"),
         ],
     },
     "lmstudio": {
@@ -323,30 +365,38 @@ PROVIDERS = {
         "description": "Gemini API (requires GEMINI_API_KEY)",
         "requires_key": True,
         "requires_url": False,
-        "default_model": "gemini-3.1-flash-lite-preview",
+        "default_model": "gemini-3.5-flash-lite",
         "default_url": "https://generativelanguage.googleapis.com/v1beta/openai",
         "models": [
-            ("gemini-3.1-flash-lite-preview", "Gemini 3.1 Flash Lite (fast, recommended)"),
-            ("gemini-2.5-flash-lite", "Gemini 2.5 Flash Lite"),
-            ("gemini-2.5-flash", "Gemini 2.5 Flash"),
-            ("gemini-2.0-flash", "Gemini 2.0 Flash"),
-            ("gemini-2.0-flash-lite", "Gemini 2.0 Flash Lite"),
+            ("gemini-3.5-flash-lite", "Gemini 3.5 Flash Lite (fast, cheap, recommended)"),
+            ("gemini-3.8-flash", "Gemini 3.8 Flash (newest flash)"),
+            ("gemini-3.6-flash", "Gemini 3.6 Flash"),
+            ("gemini-4-argon", "Gemini 4 Argon (pro, most capable)"),
+            ("gemini-3.1-flash-lite", "Gemini 3.1 Flash Lite (shuts down 2027-05-07)"),
+            ("gemini-2.5-flash", "Gemini 2.5 Flash (existing users only)"),
+            ("gemini-2.5-flash-lite", "Gemini 2.5 Flash Lite (existing users only)"),
         ],
+        # Past their shutdown date (ai.google.dev/gemini-api/docs/deprecations).
+        "retired": ["gemini-2.0-flash", "gemini-2.0-flash-lite"],
+        # The preview's stable release.
+        "renamed": {"gemini-3.1-flash-lite-preview": "gemini-3.1-flash-lite"},
     },
     "groq": {
         "name": "Groq",
         "description": "Groq API (requires GROQ_API_KEY)",
         "requires_key": True,
         "requires_url": False,
-        "default_model": "meta-llama/llama-4-scout-17b-16e-instruct",
+        "default_model": "openai/gpt-oss-120b",
         "default_url": "https://api.groq.com/openai/v1",
         "models": [
-            ("meta-llama/llama-4-scout-17b-16e-instruct", "Llama 4 Scout 17B (recommended)"),
-            ("llama-3.3-70b-versatile", "Llama 3.3 70B Versatile"),
-            ("llama-3.1-8b-instant", "Llama 3.1 8B Instant (fast)"),
-            ("gemma2-9b-it", "Gemma 2 9B"),
-            ("mixtral-8x7b-32768", "Mixtral 8x7B"),
+            ("openai/gpt-oss-120b", "GPT-OSS 120B (131K ctx, recommended)"),
+            ("openai/gpt-oss-20b", "GPT-OSS 20B (131K ctx, fast)"),
+            ("qwen/qwen3.8-27b", "Qwen 3.8 27B (preview, 131K ctx)"),
+            ("llama-3.3-70b-versatile", "Llama 3.3 70B Versatile (enterprise tier only)"),
+            ("llama-3.1-8b-instant", "Llama 3.1 8B Instant (enterprise tier only)"),
         ],
+        # Shut down by Groq (console.groq.com/docs/deprecations).
+        "retired": ["meta-llama/llama-4-scout-17b-16e-instruct", "gemma2-9b-it", "mixtral-8x7b-32768"],
     },
     "custom": {
         "name": "Custom endpoint",
@@ -356,20 +406,114 @@ PROVIDERS = {
     },
 }
 
+# Per provider: which generic settings it supports (native parameter + default), per-model differences
+# ("model_settings": {model: {generic: spec, or None = not supported by that model}}), and capabilities.
+CONNECTORS = {
+    "claude-cli": {"settings": {}, "capabilities": {"batches": False}},
+    "anthropic": {
+        "settings": {"max_output_tokens": {"param": "max_tokens", "default": ANTHROPIC_MAX_TOKENS}},
+        "capabilities": {"batches": True},
+    },
+    "openai": {"settings": OPENAI_COMPATIBLE_SETTINGS, "capabilities": {"batches": False}},
+    "ollama": {
+        "settings": {
+            "temperature": {"param": "temperature", "default": 0.2},
+            "top_p": {"param": "top_p", "default": 0.9},
+            "max_output_tokens": {"param": "num_predict", "default": -1},  # -1 = unlimited
+            "context_window": {"param": "num_ctx", "default": 65536},
+            "gpu_layers": {"param": "num_gpu", "default": 99},
+        },
+        "capabilities": {"batches": False},
+    },
+    "lmstudio": {"settings": OPENAI_COMPATIBLE_SETTINGS, "capabilities": {"batches": False}},
+    "gemini": {"settings": OPENAI_COMPATIBLE_SETTINGS, "capabilities": {"batches": False}},
+    "groq": {"settings": OPENAI_COMPATIBLE_SETTINGS, "capabilities": {"batches": False}},
+    "custom": {"settings": OPENAI_COMPATIBLE_SETTINGS, "capabilities": {"batches": False}},
+}
+
+
+def connector_settings(provider: str, model: str) -> dict:
+    """{generic name: {"param", "default"}} this provider and model support."""
+    connector = CONNECTORS.get(provider, {})
+    settings = dict(connector.get("settings", {}))
+    for name, spec in connector.get("model_settings", {}).get(model, {}).items():
+        if spec is None:
+            settings.pop(name, None)
+        else:
+            settings[name] = spec
+    return settings
+
+
+def native_params(provider: str, model: str, config: dict, temperature: float | None = None) -> dict:
+    """The provider's native parameters for this call: config["settings"] values (or the connector
+    defaults), renamed to what this provider and model expect. An explicit temperature overrides the
+    configured one. Settings the model does not support, and settings with no value, are left out."""
+    values = dict(config.get("settings", {}))
+    if temperature is not None:
+        values["temperature"] = temperature
+    params = {}
+    for name, spec in connector_settings(provider, model).items():
+        value = values.get(name, spec["default"])
+        if value is not None:
+            params[spec["param"]] = value
+    return params
+
+
+def provider_supports(provider: str, capability: str) -> bool:
+    """True if the provider's connector declares the capability (e.g. "batches")."""
+    return bool(CONNECTORS.get(provider, {}).get("capabilities", {}).get(capability))
+
+
+def migrate_legacy_settings(config: dict) -> bool:
+    """Move settings saved under their old Ollama-only keys into config["settings"]. True if changed."""
+    moved = {generic: config.pop(old) for old, generic in LEGACY_SETTING_KEYS.items() if old in config}
+    if not moved:
+        return False
+    config["settings"] = {**moved, **config.get("settings", {})}
+    return True
+
+
 CONFIG_PATH = Path.home() / ".synapptic" / "config.yaml"
 
 
 def load_config() -> dict:
-    """Load synaptic configuration. Returns defaults if no config file."""
+    """Load synaptic configuration. Returns defaults if no config file.
+
+    A saved model the provider has since retired is replaced by that provider's default (and saved).
+    """
     if CONFIG_PATH.exists():
         try:
             with open(CONFIG_PATH) as f:
                 data = yaml.safe_load(f)
                 if isinstance(data, dict):
+                    retired = replace_retired_model(data)
+                    if migrate_legacy_settings(data) or retired:
+                        save_config(data)
                     return data
         except (yaml.YAMLError, OSError):
             pass
     return {}
+
+
+def replace_retired_model(config: dict) -> bool:
+    """Carry a renamed model over to its current ID; replace a retired one with the provider's default.
+
+    Only IDs a provider lists under "retired" or "renamed" are touched: a custom model the user typed
+    (an Ollama tag, a custom endpoint's model) is never reset just because it is not in the menu.
+    Returns True if the config changed.
+    """
+    info = PROVIDERS.get(config.get("provider", ""), {})
+    model = config.get("model")
+    if model in info.get("renamed", {}):
+        config["model"] = info["renamed"][model]
+        print(f"synapptic: model {model} is now {config['model']}; config updated", file=sys.stderr)
+        return True
+    if model in info.get("retired", []):
+        config["model"] = info["default_model"]
+        print(f"synapptic: model {model} was retired by {info['name']}; using the default "
+              f"{config['model']} (change it with `synapptic config provider`)", file=sys.stderr)
+        return True
+    return False
 
 
 def save_config(config: dict):
@@ -385,17 +529,18 @@ def save_config(config: dict):
 
 def _dispatch_call(prompt, provider, model, config, temperature, session_id):
     """Route a single call to the right provider function. No retry logic."""
+    params = native_params(provider, model, config, temperature)
     if provider == "claude-cli":
         return call_claude_cli(prompt, model, temperature=temperature, session_id=session_id)
     if provider == "anthropic":
-        return call_anthropic(prompt, model, config.get("api_key", ""), temperature=temperature)
+        return call_anthropic(prompt, model, config.get("api_key", ""), temperature=temperature, params=params)
     if provider == "ollama":
         url = config.get("api_url", PROVIDERS.get(provider, {}).get("default_url", ""))
-        return call_ollama(prompt, model, url, config, temperature=temperature)
+        return call_ollama(prompt, model, url, config, temperature=temperature, params=params)
     if provider in ("openai", "gemini", "groq", "lmstudio", "custom"):
         url = config.get("api_url", PROVIDERS.get(provider, {}).get("default_url", ""))
         key = config.get("api_key", "")
-        return call_openai_compatible(prompt, model, url, key, temperature=temperature)
+        return call_openai_compatible(prompt, model, url, key, temperature=temperature, params=params)
     print(f"Unknown provider: {provider}", file=sys.stderr)
     return None
 
@@ -452,6 +597,20 @@ def call_llm(prompt: str, config: dict | None = None, temperature: float | None 
     return None
 
 
+# Set on every `claude -p` synapptic starts; the bundled hooks exit at once when they see it.
+INTERNAL_RUN_ENV = "SYNAPPTIC_INTERNAL"
+
+# Anthropic API: $ per million tokens (input, output) for the [tokens] cost line.
+# Cache writes bill at 1.25x input, reads at 0.1x.
+ANTHROPIC_PRICES = {
+    "claude-fable-5-1": (10.00, 50.00),
+    "claude-opus-5-5": (4.00, 20.00),
+    "claude-haiku-4-5": (1.00, 5.00),
+    "claude-sonnet-5-5": (2.00, 10.00),
+    "claude-haiku-5-5": (0.10, 0.50),
+}
+
+
 def call_claude_cli(prompt: str, model: str = "sonnet", temperature: float | None = None, session_id: str | None = None) -> str | None:
     """Call claude -p with JSON output for token/cost tracking.
 
@@ -468,6 +627,8 @@ def call_claude_cli(prompt: str, model: str = "sonnet", temperature: float | Non
             capture_output=True,
             text=True,
             timeout=300,
+            # Hooks inherit this: synapptic's own runs must not checkpoint themselves (a Stop hook loop).
+            env={**os.environ, INTERNAL_RUN_ENV: "1"},
         )
     except subprocess.TimeoutExpired:
         print("LLM call timed out (claude -p)", file=sys.stderr)
@@ -528,67 +689,92 @@ def call_claude_cli(prompt: str, model: str = "sonnet", temperature: float | Non
     return response_text.strip() if response_text else None
 
 
-def call_anthropic(prompt: str, model: str, api_key: str, temperature: float | None = None) -> str | None:
-    """Call Anthropic API directly using urllib (no SDK dependency)."""
-    import urllib.request
-    import urllib.error
+def call_anthropic(prompt: str, model: str, api_key: str, temperature: float | None = None,
+                   params: dict | None = None) -> str | None:
+    """Call the Claude Messages API through the official anthropic SDK.
 
+    params: native parameters from the connector (native_params); without them, the connector defaults.
+    temperature is not sent: current Claude models reject sampling parameters, so the connector maps none.
+    The SDK retries connection errors; a 429/503 is reported through _last_http_status for call_llm's retry.
+    """
+    if params is None:
+        params = native_params("anthropic", model, {}, temperature)
     if not api_key:
-        import os
         api_key = os.environ.get("ANTHROPIC_API_KEY", "")
         if api_key:
             print("Warning: using ANTHROPIC_API_KEY from environment (not in config)", file=sys.stderr)
     if not api_key:
-        print("No ANTHROPIC_API_KEY configured. Run `synaptic init` or set the environment variable.", file=sys.stderr)
+        print("No Anthropic API key configured. Run `synapptic config provider` or set ANTHROPIC_API_KEY.",
+              file=sys.stderr)
         return None
-
-    payload = {
-        "model": model,
-        "max_tokens": 4096,
-        "messages": [{"role": "user", "content": prompt}],
-    }
-    if temperature is not None:
-        payload["temperature"] = temperature
-    body = json.dumps(payload).encode()
-
-    req = urllib.request.Request(
-        "https://api.anthropic.com/v1/messages",
-        data=body,
-        headers={
-            "Content-Type": "application/json",
-            "x-api-key": api_key,
-            "anthropic-version": "2023-06-01",
-        },
-    )
 
     global _last_http_status, _last_http_body
+    _last_http_status, _last_http_body = 0, ""
+    started = time.time()
     try:
-        with urllib.request.urlopen(req, timeout=300) as resp:
-            _last_http_status = resp.status
-            _last_http_body = ""
-            data = json.loads(resp.read())
-            for block in data.get("content", []):
-                if block.get("type") == "text":
-                    return block["text"].strip()
-            return None
-    except urllib.error.HTTPError as e:
-        _last_http_status = e.code
-        body = redact_secrets(e.read().decode()[:500])
-        _last_http_body = body
-        print(f"Anthropic API error {e.code}: {body[:200]}", file=sys.stderr)
+        response = anthropic.Anthropic(api_key=api_key, max_retries=2).messages.create(
+            model=model,
+            messages=[{"role": "user", "content": prompt}],
+            **params,
+        )
+    except anthropic.APIStatusError as e:
+        _last_http_status = e.status_code
+        _last_http_body = redact_secrets(str(e.message)[:500])
+        print(f"Anthropic API error {e.status_code}: {_last_http_body[:200]}", file=sys.stderr)
         return None
-    except Exception as e:
-        _last_http_status = 0
-        _last_http_body = ""
-        print(f"Anthropic API error: {e}", file=sys.stderr)
+    except anthropic.APIConnectionError as e:
+        print(f"Anthropic API connection error: {e}", file=sys.stderr)
         return None
+    duration = time.time() - started
+
+    usage = response.usage
+    input_tokens = usage.input_tokens or 0
+    output_tokens = usage.output_tokens or 0
+    cache_create = usage.cache_creation_input_tokens or 0
+    cache_read = usage.cache_read_input_tokens or 0
+    price_in, price_out = ANTHROPIC_PRICES.get(model, (0.0, 0.0))
+    cost = (input_tokens * price_in + cache_create * price_in * 1.25 + cache_read * price_in * 0.1
+            + output_tokens * price_out) / 1_000_000
+
+    track_call({
+        "prompt_tokens": input_tokens,
+        "response_tokens": output_tokens,
+        "cache_create": cache_create,
+        "cache_read": cache_read,
+        "total_tokens": input_tokens + output_tokens,
+        "cost_usd": cost,
+        "elapsed_sec": duration,
+    })
+
+    if output_tokens > 0:
+        tps = output_tokens / duration if duration > 0 else 0
+        print(
+            f"  [tokens] {format_tokens(output_tokens)} gen | {format_tokens(input_tokens)} prompt | "
+            f"cache: {format_tokens(cache_read)}r/{format_tokens(cache_create)}w | "
+            f"${cost:.4f} | {duration:.1f}s | {tps:.1f} tok/s",
+            file=sys.stderr,
+        )
+
+    if response.stop_reason == "refusal":
+        # stop_details exists only in newer SDKs (0.84 has stop_reason but not the details object)
+        print(f"Anthropic API refused the request: {getattr(response, 'stop_details', None)}", file=sys.stderr)
+        return None
+    if response.stop_reason == "max_tokens":
+        print(f"Anthropic API response hit max_tokens ({params.get('max_tokens')}); output is truncated",
+              file=sys.stderr)
+    text = "".join(block.text for block in response.content if block.type == "text").strip()
+    return text or None
 
 
-def call_ollama(prompt: str, model: str, api_url: str, config: dict, temperature: float | None = None) -> str | None:
+def call_ollama(prompt: str, model: str, api_url: str, config: dict, temperature: float | None = None,
+                params: dict | None = None) -> str | None:
     """Call Ollama's native API with optimization parameters (num_ctx, num_gpu, etc).
 
+    params: native options from the connector (native_params); without them, built from config here.
     Returns response text. Token metrics stored in _last_ollama_metrics.
     """
+    if params is None:
+        params = native_params("ollama", model, config, temperature)
     import urllib.request
     import urllib.error
     import time
@@ -601,13 +787,7 @@ def call_ollama(prompt: str, model: str, api_url: str, config: dict, temperature
         print(f"Error: unsupported URL scheme in api_url (only http/https allowed): {api_url[:50]}", file=sys.stderr)
         return None
 
-    # Extract Ollama-specific parameters from config
-    num_ctx = config.get("ollama_num_ctx", 65536)  # default 64k context
-    num_gpu = config.get("ollama_num_gpu", 99)     # default max GPU layers
-    # Explicit temperature param overrides config value
-    if temperature is None:
-        temperature = config.get("ollama_temperature", 0.2)
-    top_p = config.get("ollama_top_p", 0.9)
+    timeout = config.get("ollama_timeout", 600)         # default 10 min (large models need time to load)
 
     # Ollama native API endpoint: strip /v1 from OpenAI-compat URL and use /api/generate
     base_url = api_url.rstrip("/")
@@ -619,13 +799,8 @@ def call_ollama(prompt: str, model: str, api_url: str, config: dict, temperature
     body = json.dumps({
         "model": model,
         "prompt": prompt,
-        "stream": False,
-        "options": {
-            "num_ctx": num_ctx,
-            "num_gpu": num_gpu,
-            "temperature": temperature,
-            "top_p": top_p,
-        }
+        "stream": True,
+        "options": params,
     }).encode()
 
     req = urllib.request.Request(
@@ -636,42 +811,58 @@ def call_ollama(prompt: str, model: str, api_url: str, config: dict, temperature
 
     try:
         start_time = time.time()
-        with urllib.request.urlopen(req, timeout=300) as resp:
-            data = json.loads(resp.read())
-            elapsed = time.time() - start_time
+        chunks = []
+        final_chunk = {}
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            for line in resp:
+                if not line.strip():
+                    continue
+                try:
+                    chunk = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                chunks.append(chunk.get("response", ""))
+                if chunk.get("done"):
+                    final_chunk = chunk
+                    break
 
-            response_text = data.get("response", "").strip()
+        elapsed = time.time() - start_time
+        response_text = "".join(chunks).strip()
 
-            # Extract token metrics from Ollama response
-            prompt_tokens = data.get("prompt_eval_count", 0)
-            response_tokens = data.get("eval_count", 0)
-            total_tokens = prompt_tokens + response_tokens
-            tokens_per_sec = response_tokens / elapsed if elapsed > 0 else 0
+        # Strip <think>...</think> blocks produced by thinking models (Qwen3, DeepSeek-R1, etc.)
+        # Thinking improves reasoning quality; we just don't want the raw block in the parsed output.
+        response_text = re.sub(r"<think>.*?</think>", "", response_text, flags=re.DOTALL).strip()
 
-            # Store metrics globally and persistently for monitoring
-            metrics = {
-                "prompt_tokens": prompt_tokens,
-                "response_tokens": response_tokens,
-                "total_tokens": total_tokens,
-                "elapsed_sec": elapsed,
-                "tokens_per_sec": tokens_per_sec,
-            }
-            global _last_ollama_metrics
-            _last_ollama_metrics = metrics
-            track_call(metrics)
-            log_token_metrics(metrics)
+        # Extract token metrics from final streaming chunk
+        prompt_tokens = final_chunk.get("prompt_eval_count", 0)
+        response_tokens = final_chunk.get("eval_count", 0)
+        total_tokens = prompt_tokens + response_tokens
+        tokens_per_sec = response_tokens / elapsed if elapsed > 0 else 0
 
-            # Print live metrics during operation
-            if response_tokens > 0:
-                print(
-                    f"  [tokens] {format_tokens(response_tokens)} gen | {format_tokens(prompt_tokens)} prompt | "
-                    f"{elapsed:.1f}s | {tokens_per_sec:.1f} tok/s",
-                    file=sys.stderr
-                )
+        # Store metrics globally and persistently for monitoring
+        metrics = {
+            "prompt_tokens": prompt_tokens,
+            "response_tokens": response_tokens,
+            "total_tokens": total_tokens,
+            "elapsed_sec": elapsed,
+            "tokens_per_sec": tokens_per_sec,
+        }
+        global _last_ollama_metrics
+        _last_ollama_metrics = metrics
+        track_call(metrics)
+        log_token_metrics(metrics)
 
-            if response_text:
-                return response_text
-            return None
+        # Print live metrics during operation
+        if response_tokens > 0:
+            print(
+                f"  [tokens] {format_tokens(response_tokens)} gen | {format_tokens(prompt_tokens)} prompt | "
+                f"{elapsed:.1f}s | {tokens_per_sec:.1f} tok/s",
+                file=sys.stderr
+            )
+
+        if response_text:
+            return response_text
+        return None
     except urllib.error.HTTPError as e:
         global _last_http_status, _last_http_body
         _last_http_status = e.code
@@ -771,8 +962,14 @@ def get_token_metrics_summary(limit: int = 10) -> dict:
     }
 
 
-def call_openai_compatible(prompt: str, model: str, api_url: str, api_key: str = "", temperature: float | None = None) -> str | None:
-    """Call any OpenAI-compatible API (OpenAI, Ollama, LMStudio, custom)."""
+def call_openai_compatible(prompt: str, model: str, api_url: str, api_key: str = "", temperature: float | None = None,
+                           params: dict | None = None) -> str | None:
+    """Call any OpenAI-compatible API (OpenAI, Ollama, LMStudio, custom).
+
+    params: native parameters from the connector (native_params); without them, the OpenAI connector defaults.
+    """
+    if params is None:
+        params = native_params("openai", model, {}, temperature)
     import urllib.request
     import urllib.error
     import os
@@ -804,10 +1001,8 @@ def call_openai_compatible(prompt: str, model: str, api_url: str, api_key: str =
     payload = {
         "model": model,
         "messages": [{"role": "user", "content": prompt}],
-        "max_tokens": 4096,
+        **params,
     }
-    if temperature is not None:
-        payload["temperature"] = temperature
     body = json.dumps(payload).encode()
 
     headers = {

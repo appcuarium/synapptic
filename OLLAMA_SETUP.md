@@ -54,20 +54,45 @@ synapptic results compare claude-cli sonnet ollama qwen3-coder-next:q4_K_M
 
 ## Ollama Native API Parameters
 
-Synapptic automatically sends these parameters to Ollama's `/api/generate` endpoint:
+Synapptic uses Ollama's `/api/generate` endpoint with streaming enabled (responses are streamed line-by-line to avoid timeouts on large thinking models):
 
 ```json
 {
   "model": "qwen3-coder-next:q4_K_M",
   "prompt": "...",
-  "stream": false,
+  "stream": true,
   "options": {
     "num_ctx": 262144,        // Context window (configurable)
     "num_gpu": 99,            // GPU layer offload (configurable)
     "temperature": 0.1,       // Randomness (configurable per preset)
-    "top_p": 0.95             // Nucleus sampling (configurable per preset)
+    "top_p": 0.95,            // Nucleus sampling (configurable per preset)
+    "num_predict": -1         // Max output tokens (-1 = unlimited, override via config)
   }
 }
+```
+
+### Config keys
+
+All Ollama parameters can be overridden in `~/.synapptic/config.yaml`:
+
+```yaml
+ollama_num_ctx: 65536         # Context window (default: 64k)
+ollama_num_gpu: 99            # GPU layers to offload (default: 99 = max)
+ollama_temperature: 0.2       # Temperature (default: 0.2; overridden by presets)
+ollama_top_p: 0.9             # Top-p nucleus sampling (default: 0.9)
+ollama_timeout: 600           # Per-chunk timeout in seconds (default: 600)
+ollama_num_predict: 4096      # Max output tokens — useful to cap thinking model verbosity
+```
+
+**`ollama_num_predict`** is particularly useful for thinking models (Qwen3.5, DeepSeek-R1). These models can generate thousands of `<think>` tokens before the actual answer. Synapptic strips `<think>...</think>` blocks automatically, but setting a cap (e.g. `4096`) speeds up benchmarking at the cost of shorter thinking chains:
+
+```bash
+# Fast benchmarking with capped generation (thinking still enabled, just shorter)
+synapptic config set ollama_num_predict 4096
+synapptic benchmark -p <project> -n 15 --seed 123
+
+# Remove cap for extraction/synthesis where full reasoning matters
+synapptic config unset ollama_num_predict
 ```
 
 ## Tool Calling & Prompt Adaptation
@@ -140,6 +165,20 @@ synapptic config ollama  # Select "extraction" instead of "max"
 # Or check GPU offload:
 ollama list | grep qwen3  # Verify loaded in memory
 ```
+
+### Benchmarking is very slow with Qwen3.5 / thinking models
+
+Thinking models (Qwen3.5-35B-A3B, DeepSeek-R1) generate reasoning tokens before answering. Each benchmark batch can take 5+ minutes. Options:
+
+```bash
+# Cap generation to limit thinking token count (thinking still active, just shorter)
+synapptic config set ollama_num_predict 4096
+
+# Or increase timeout if you want unlimited thinking and don't mind waiting
+synapptic config set ollama_timeout 900
+```
+
+Thinking blocks are stripped automatically from all responses — they improve answer quality without affecting output parsing.
 
 ### Inconsistent extraction results
 - Qwen3's behavior varies more at higher temperatures

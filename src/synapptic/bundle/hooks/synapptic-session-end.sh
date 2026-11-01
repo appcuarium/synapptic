@@ -1,8 +1,13 @@
 #!/bin/bash
 # synapptic SessionEnd hook — extracts ONLY the closed session, fully detached.
 
-PIDFILE="/tmp/synapptic-hook.pid"
-LOGFILE="/tmp/synapptic-session-end.log"
+PIDFILE="${SYNAPPTIC_HOOK_PIDFILE:-/tmp/synapptic-hook.pid}"
+LOGFILE="${SYNAPPTIC_HOOK_LOGFILE:-/tmp/synapptic-session-end.log}"
+
+# synapptic's own `claude -p` extraction runs: never learn from them.
+if [ -n "$SYNAPPTIC_INTERNAL" ]; then
+    exit 0
+fi
 
 # The python3 on PATH may lack synapptic (e.g. Homebrew next to a conda install), and then the project
 # slug comes out empty and synthesize rebuilds every project. Use the interpreter in synapptic's shebang.
@@ -50,13 +55,14 @@ if [ -f "$PIDFILE" ]; then
     rm -f "$PIDFILE"
 fi
 
-# Extract this session, merge, synthesize only this project + global
+# Extract this session, merge, synthesize only this project + global, then write it to that project's memory
 nohup bash -c '
     echo $$ > '"$PIDFILE"'
     echo "[$(date)] Extracting '"$SESSION_ID"' ['"$PROJECT"'] ('"$REASON"')" >> '"$LOGFILE"'
-    synapptic extract -s '"$SESSION_ID"' >> '"$LOGFILE"' 2>&1
+    synapptic checkpoint -s '"$SESSION_ID"' --flush --synthesize-after -1 >> '"$LOGFILE"' 2>&1
     synapptic merge >> '"$LOGFILE"' 2>&1
     synapptic synthesize -p '"$PROJECT"' >> '"$LOGFILE"' 2>&1
+    synapptic integrate -p '"$PROJECT"' >> '"$LOGFILE"' 2>&1
     echo "[$(date)] Done '"$SESSION_ID"'" >> '"$LOGFILE"'
     rm -f '"$PIDFILE"'
 ' </dev/null >/dev/null 2>&1 &

@@ -83,3 +83,33 @@ class TestProfileCommand:
         monkeypatch.setattr("synapptic.state.PROJECTS_DIR", tmp_path / "projects")
         result = runner.invoke(cli, ["profile"])
         assert result.exit_code == 0
+
+
+class TestIngestIntegrationTupleShape:
+
+    def test_ingest_accepts_extended_integration_tuple(self, runner, monkeypatch):
+        """ingest should handle integrate_archetypes tuples with extra fields."""
+        from pathlib import Path
+
+        monkeypatch.setattr("synapptic.cli.find_session_transcripts", lambda: {})
+        monkeypatch.setattr("synapptic.cli.get_processed_session_ids", lambda: set())
+        monkeypatch.setattr("synapptic.cli.get_queue", lambda: [])
+        monkeypatch.setattr("synapptic.cli.clear_queue", lambda: None)
+        monkeypatch.setattr("synapptic.cli.list_projects", lambda: [])
+        monkeypatch.setattr(
+            "synapptic.cli.load_profile",
+            lambda project_slug=None: {"dimensions": {}, "metadata": {}},
+        )
+        monkeypatch.setattr("synapptic.providers.load_config", lambda: {"provider": "mock", "model": "mock"})
+        monkeypatch.setattr(
+            "synapptic.integrate.integrate_archetypes",
+            lambda project_slugs=None: [
+                ("demo", "copilot", Path("/tmp/demo"), "gemini-2.0-flash", 2)
+            ],
+        )
+
+        result = runner.invoke(cli, ["ingest"])
+        assert result.exit_code == 0
+        assert "[demo]" in result.output
+        assert "excluded=2" in result.output
+

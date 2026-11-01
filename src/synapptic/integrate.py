@@ -12,6 +12,55 @@ from synapptic.outputs import WRITERS, resolve_target_model, write_claude_code
 from synapptic.providers import load_config
 from synapptic.state import slug_from_project_dir, load_archetype, load_profile
 from synapptic.synthesize import filter_for_narrative
+from synapptic.benchmark import remove_guard_from_archetype
+
+
+def _combine_profiles(global_profile: dict, project_profile: dict) -> dict:
+    """Build a merged view so model resolution can see both global and project verdicts."""
+    dimensions = {}
+    for dim_name, prefs in global_profile.get("dimensions", {}).items():
+        dimensions[dim_name] = list(prefs)
+    for dim_name, prefs in project_profile.get("dimensions", {}).items():
+        dimensions.setdefault(dim_name, []).extend(prefs)
+    return {"dimensions": dimensions}
+
+
+def _removed_rules_for_target(profile: dict, target_model: str | None) -> list[str]:
+    """Return rule observations that should be excluded for this target model."""
+    if not target_model:
+        return []
+
+    full = filter_for_narrative(profile)
+    filtered = filter_for_narrative(profile, target_model=target_model)
+
+    def _obs_by_dim(p: dict) -> dict[str, set[str]]:
+        return {
+            dim: {x.get("observation", "") for x in prefs if x.get("observation")}
+            for dim, prefs in p.get("dimensions", {}).items()
+        }
+
+    full_obs = _obs_by_dim(full)
+    filtered_obs = _obs_by_dim(filtered)
+
+    removed = []
+    for dim, texts in full_obs.items():
+        # Only these dims generate prescriptive rules that may appear in archetypes.
+        if dim not in ("guards", "ai_failures"):
+            continue
+        removed.extend(sorted(texts - filtered_obs.get(dim, set())))
+    return removed
+
+
+def _apply_target_filter(archetype_md: str | None, profile: dict, target_model: str | None) -> tuple[str, int]:
+    """Remove model-excluded rules from an archetype markdown document."""
+    if not archetype_md:
+        return "", 0
+
+    removed_rules = _removed_rules_for_target(profile, target_model)
+    filtered_md = archetype_md
+    for rule in removed_rules:
+        filtered_md = remove_guard_from_archetype(filtered_md, rule)
+    return filtered_md, len(removed_rules)
 
 
 def integrate_archetypes(project_slugs: list[str] | None = None):
@@ -20,11 +69,12 @@ def integrate_archetypes(project_slugs: list[str] | None = None):
     For each target, resolves the best matching model from benchmark verdicts
     and filters out redundant/backfire guards for that model.
 
-    Returns list of (slug, target, path, target_model) tuples for what was written.
+    Returns list of (slug, target, path, target_model, excluded_count) tuples.
     """
     config = load_config()
     output_targets = config.get("outputs", ["claude-code"])
     global_archetype = load_archetype(project_slug=None) or ""
+    global_profile = load_profile(project_slug=None)
 
     project_dirs = find_project_dirs_with_slugs()
 
@@ -37,23 +87,18 @@ def integrate_archetypes(project_slugs: list[str] | None = None):
     updated = []
     for slug, info in project_dirs.items():
         project_archetype = load_archetype(project_slug=slug)
-        profile = load_profile(project_slug=slug)
+        project_profile = load_profile(project_slug=slug)
+        combined_profile = _combine_profiles(global_profile, project_profile)
 
         for target in output_targets:
             # Resolve target model for guard filtering
-            target_model = resolve_target_model(target, profile)
+            target_model = resolve_target_model(target, combined_profile)
 
-            # If there are model-specific verdicts, note excluded count
-            if target_model:
-                full = filter_for_narrative(profile)
-                filtered = filter_for_narrative(profile, target_model=target_model)
-                full_count = sum(len(v) for v in full.get("dimensions", {}).values())
-                filtered_count = sum(len(v) for v in filtered.get("dimensions", {}).values())
-                excluded_count = full_count - filtered_count
-            else:
-                excluded_count = 0
+            filtered_global, excluded_global = _apply_target_filter(global_archetype, global_profile, target_model)
+            filtered_project, excluded_project = _apply_target_filter(project_archetype, project_profile, target_model)
+            excluded_count = excluded_global + excluded_project
 
-            combined = combine_archetypes(global_archetype, project_archetype, slug)
+            combined = combine_archetypes(filtered_global, filtered_project, slug)
             if not combined.strip():
                 continue
 

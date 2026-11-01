@@ -24,6 +24,9 @@ from synapptic.config import (
     PROJECT_DIMENSIONS,
 )
 
+# Fields merge_observations computes; anything else on a preference was added later (benchmark) and is kept.
+MERGED_FIELDS = {"observation", "weight", "evidence_count", "first_seen", "last_seen", "sources", "projects"}
+
 
 def merge_observations(
     existing_profile: dict,
@@ -58,16 +61,7 @@ def merge_observations(
             # Use observation text as stable key — id() breaks on deep-copy/reconstruction
             stable_key = (dim_name, pref.get("observation", ""))
             pre_decay_weights[stable_key] = pref.get("weight", 0.5)
-            pref["weight"] = pref.get("weight", 0.5) * decay_factor
-            last_seen = pref.get("last_seen", "")
-            if last_seen and TIME_DECAY_HALFLIFE_DAYS > 0:
-                try:
-                    last_dt = datetime.fromisoformat(last_seen)
-                    days_ago = (now - last_dt).days
-                    if days_ago > 0:
-                        pref["weight"] *= math.pow(0.5, days_ago / TIME_DECAY_HALFLIFE_DAYS)
-                except (ValueError, TypeError):
-                    pass
+            pref["weight"] = pref.get("weight", 0.5) * decay_factor * time_decay(pref.get("last_seen", ""), now)
 
     # Step 2: Merge each new observation
     session_ids_seen = set()
@@ -127,19 +121,8 @@ def merge_observations(
                 "projects": [project] if project else [],
             })
 
-    # Step 3: Archive low-weight preferences
-    for dim_name in list(dimensions.keys()):
-        dimensions[dim_name] = [
-            p for p in dimensions[dim_name]
-            if p.get("weight", 0) >= MIN_WEIGHT_THRESHOLD
-        ]
-        # Remove empty dimensions
-        if not dimensions[dim_name]:
-            del dimensions[dim_name]
-
-    # Step 4: Sort each dimension by weight (highest first)
-    for dim_name in dimensions:
-        dimensions[dim_name].sort(key=lambda p: p.get("weight", 0), reverse=True)
+    # Steps 3 and 4: archive low-weight preferences, sort each dimension by weight (highest first)
+    archive_and_sort(dimensions)
 
     # Update metadata
     metadata["total_sessions_analyzed"] = metadata.get("total_sessions_analyzed", 0) + len(session_ids_seen)
@@ -147,6 +130,73 @@ def merge_observations(
     metadata["profile_version"] = metadata.get("profile_version", 0) + 1
 
     return {"dimensions": dimensions, "metadata": metadata}
+
+
+def time_decay(last_seen: str, now: datetime) -> float:
+    """Multiplier for a preference not seen for a while: halves every TIME_DECAY_HALFLIFE_DAYS."""
+    if not last_seen or TIME_DECAY_HALFLIFE_DAYS <= 0:
+        return 1.0
+    try:
+        days_ago = (now - datetime.fromisoformat(last_seen)).days
+    except (ValueError, TypeError):
+        return 1.0
+    return math.pow(0.5, days_ago / TIME_DECAY_HALFLIFE_DAYS) if days_ago > 0 else 1.0
+
+
+def archive_and_sort(dimensions: dict):
+    """Drop preferences below MIN_WEIGHT_THRESHOLD and empty dimensions; sort each dimension by weight."""
+    for dim_name in list(dimensions.keys()):
+        dimensions[dim_name] = [
+            p for p in dimensions[dim_name]
+            if p.get("weight", 0) >= MIN_WEIGHT_THRESHOLD
+        ]
+        if not dimensions[dim_name]:
+            del dimensions[dim_name]
+    for dim_name in dimensions:
+        dimensions[dim_name].sort(key=lambda p: p.get("weight", 0), reverse=True)
+
+
+def rebuild_profile(observations: list[dict], previous: dict, promotions: list[dict] = ()) -> dict:
+    """Recompute a profile from every observation, once each, in the order they were extracted.
+
+    The result depends only on the observation files, so running it again, or while a hook runs it too,
+    cannot count a session twice. Decay is time-based only (last_seen against now). Fields other code added
+    to a preference (benchmark `excluded`, `model_verdicts`) are carried over from the previous profile.
+    """
+    # A missing timestamp would make merge_observations stamp "now", so every rebuild would differ: use ""
+    # for observations without one, and a promotion's own last_seen.
+    ordered = sorted(({**o, "timestamp": o.get("timestamp") or ""} for o in observations),
+                     key=lambda o: o["timestamp"])
+    ordered += [{**p, "timestamp": p.get("last_seen") or ""} for p in promotions]
+    rebuilt = merge_observations({"dimensions": {}, "metadata": {}}, ordered, decay_factor=1.0)
+    now = datetime.now(timezone.utc)
+    previous_dims = previous.get("dimensions", {})
+    for dim_name, prefs in rebuilt["dimensions"].items():
+        for pref in prefs:
+            pref["weight"] *= time_decay(pref.get("last_seen", ""), now)
+            match = find_match(previous_dims.get(dim_name, []), pref["observation"])
+            if match is not None:
+                for key, value in previous_dims[dim_name][match].items():
+                    if key not in MERGED_FIELDS:
+                        pref.setdefault(key, value)
+    archive_and_sort(rebuilt["dimensions"])
+    rebuilt["metadata"] = {
+        "total_sessions_analyzed": len({o.get("session_id") for o in observations if o.get("session_id")}),
+        "last_updated": now.isoformat(),
+        "profile_version": previous.get("metadata", {}).get("profile_version", 0) + 1,
+    }
+    return rebuilt
+
+
+def comparable_dimensions(profile: dict) -> dict:
+    """A profile's preferences with weights rounded to 4 places, for change detection."""
+    return {dim: [{**p, "weight": round(p.get("weight", 0), 4)} for p in prefs]
+            for dim, prefs in profile.get("dimensions", {}).items()}
+
+
+def profile_changed(previous: dict, rebuilt: dict) -> bool:
+    """True when the preferences differ, ignoring metadata and weight noise below 1e-4."""
+    return comparable_dimensions(previous) != comparable_dimensions(rebuilt)
 
 
 def route_observations(observations: list[dict]) -> tuple[list[dict], list[dict]]:

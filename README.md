@@ -145,6 +145,7 @@ synapptic benchmark -p machine-be -n 5 --seed 42     # 5 guards, deterministic s
 synapptic benchmark -p machine-be --seed 42 --refresh # regenerate tests after profile update
 synapptic benchmark --judge-model sonnet              # separate judge model (avoids self-evaluation)
 synapptic benchmark --temperature 0 --runs 5          # deterministic responses, 5 runs per test
+synapptic benchmark --batch                            # faster batched mode (optional, default is per-guard isolation)
 ```
 
 > **Note:** Using `--provider claude-cli` for benchmarking is possible but not recommended. Claude CLI reuses a session across all test runs, which means each run's token count includes all previous turns in the conversation — costs grow non-linearly and results become harder to interpret. Use a direct API provider (Anthropic, OpenAI, Ollama, Groq) for reliable, predictable benchmark costs.
@@ -281,6 +282,7 @@ synapptic benchmark --seed 42 --refresh                   # regenerate tests eve
 synapptic benchmark --seed 42 --model qwen3-coder-next    # override model, separate cache
 synapptic benchmark --judge-model sonnet                  # separate judge (avoids self-evaluation)
 synapptic benchmark --temperature 0                       # deterministic responses
+synapptic benchmark --batch                               # optional fast mode (default is non-batch)
 synapptic benchmark --flush-tests                         # clear all cached test cases
 synapptic benchmark --flush-results                       # clear all results, keep test cases
 synapptic benchmark --flush-all                           # clear everything (tests + results)
@@ -333,7 +335,7 @@ synapptic uninstall                 # clean removal (asks before deleting data)
 │   └── ...
 ├── benchmarks/              # test caches + results
 ├── profile_history/         # versioned snapshots for rollback
-├── relay.db                 # session index + relay metrics (SQLite)
+├── proxy.db                 # session index + relay metrics (SQLite)
 ├── relay.log                # relay daemon log
 └── token_metrics.jsonl      # token usage log (append-only)
 ```

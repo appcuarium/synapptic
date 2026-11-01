@@ -5,10 +5,12 @@ Sessions are routed to projects based on which Claude Code project directory
 they live in.
 """
 
+import fcntl
 import json
 import os
 import re
 import shutil
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -17,11 +19,16 @@ import yaml
 from synapptic.config import (
     SYNAPPTIC_DIR,
     CLAUDE_PROJECTS_DIR,
+    CURSORS_DIR,
     GLOBAL_DIR,
+    PIPELINE_LOCK_PATH,
     PROFILE_HISTORY_DIR,
     PROJECTS_DIR,
     QUEUE_PATH,
 )
+
+# A chunk of a live session is saved as <session>@<byte offset>.json next to whole-session <session>.json files.
+CHUNK_SEPARATOR = "@"
 
 
 # ---------------------------------------------------------------------------
@@ -142,6 +149,14 @@ def load_archetype(project_slug: str | None = None) -> str | None:
     return path.read_text()
 
 
+def archetype_age_hours(project_slug: str | None = None) -> float:
+    """Hours since the archetype was last written; infinity if it does not exist."""
+    path = (project_dir(project_slug) if project_slug else GLOBAL_DIR) / "archetype.md"
+    if not path.exists():
+        return float("inf")
+    return (datetime.now(timezone.utc).timestamp() - path.stat().st_mtime) / 3600
+
+
 def save_archetype(content: str, project_slug: str | None = None):
     """Save a narrative archetype (atomic write via temp-file + rename)."""
     ensure_dirs()
@@ -188,18 +203,21 @@ def load_observations(session_id: str, project_slug: str | None = None) -> list[
     return None
 
 
-def save_observations(session_id: str, observations: list[dict], project_slug: str | None = None):
+def save_observations(session_id: str, observations: list[dict], project_slug: str | None = None,
+                      chunk_start: int | None = None):
     """Save observations for a session under the correct project.
 
     Stores project_slug inside the JSON so it can be recovered later
-    even if the original transcript is deleted.
+    even if the original transcript is deleted. chunk_start set = one chunk of a live session,
+    saved as <session>@<chunk_start>.json.
     """
     ensure_dirs()
+    name = session_id if chunk_start is None else f"{session_id}{CHUNK_SEPARATOR}{chunk_start}"
     if project_slug:
         ensure_project_dirs(project_slug)
-        obs_path = project_dir(project_slug) / "observations" / f"{session_id}.json"
+        obs_path = project_dir(project_slug) / "observations" / f"{name}.json"
     else:
-        obs_path = GLOBAL_DIR / "observations" / f"{session_id}.json"
+        obs_path = GLOBAL_DIR / "observations" / f"{name}.json"
 
     # Embed routing metadata so merge can find it without the transcript
     payload = {
@@ -207,6 +225,8 @@ def save_observations(session_id: str, observations: list[dict], project_slug: s
         "session_id": session_id,
         "observations": observations,
     }
+    if chunk_start is not None:
+        payload["chunk_start"] = chunk_start
     with open(obs_path, "w") as f:
         json.dump(payload, f, indent=2)
 
@@ -215,8 +235,63 @@ def get_processed_session_ids() -> set[str]:
     """Return all session IDs that have been extracted (across all projects + global)."""
     ids = set()
     for obs_dir in _all_observation_dirs():
-        ids.update(p.stem for p in obs_dir.glob("*.json"))
+        ids.update(p.stem.split(CHUNK_SEPARATOR)[0] for p in obs_dir.glob("*.json"))
     return ids
+
+
+def whole_session_observation_file(session_id: str) -> Path | None:
+    """The <session>.json written by a whole-session extract, if any."""
+    for obs_dir in _all_observation_dirs():
+        path = obs_dir / f"{session_id}.json"
+        if path.exists():
+            return path
+    return None
+
+
+def remove_chunk_observations(session_id: str) -> int:
+    """Delete a session's chunk files (a whole-session extract replaces them). Returns how many."""
+    removed = 0
+    for obs_dir in _all_observation_dirs():
+        for path in obs_dir.glob(f"{session_id}{CHUNK_SEPARATOR}*.json"):
+            path.unlink()
+            removed += 1
+    return removed
+
+
+def load_cursor(session_id: str) -> int | None:
+    """Byte offset of the session's transcript already extracted, or None if never checkpointed."""
+    path = CURSORS_DIR / f"{session_id}.json"
+    if not path.exists():
+        return None
+    try:
+        return int(json.loads(path.read_text())["offset"])
+    except (json.JSONDecodeError, KeyError, TypeError, ValueError, OSError):
+        return None
+
+
+def save_cursor(session_id: str, offset: int):
+    """Record that the transcript is extracted up to `offset` bytes (atomic write)."""
+    CURSORS_DIR.mkdir(parents=True, exist_ok=True)
+    path = CURSORS_DIR / f"{session_id}.json"
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps({"offset": offset, "updated": datetime.now(timezone.utc).isoformat()}))
+    tmp.rename(path)
+
+
+@contextmanager
+def pipeline_lock(wait: bool = True):
+    """Hold the one extraction lock. Yields True when held; with wait=False yields False if another run has it."""
+    SYNAPPTIC_DIR.mkdir(parents=True, exist_ok=True)
+    with open(PIPELINE_LOCK_PATH, "w") as handle:
+        try:
+            fcntl.flock(handle, fcntl.LOCK_EX if wait else fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            yield False
+            return
+        try:
+            yield True
+        finally:
+            fcntl.flock(handle, fcntl.LOCK_UN)
 
 
 def find_all_observations() -> list[tuple[str, str | None, list[dict]]]:
@@ -229,7 +304,7 @@ def find_all_observations() -> list[tuple[str, str | None, list[dict]]]:
     results = []
     for obs_dir in _all_observation_dirs():
         for obs_file in obs_dir.glob("*.json"):
-            session_id = obs_file.stem
+            session_id = obs_file.stem.split(CHUNK_SEPARATOR)[0]
             try:
                 with open(obs_file) as f:
                     data = json.load(f)

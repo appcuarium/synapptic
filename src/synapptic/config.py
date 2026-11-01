@@ -11,6 +11,12 @@ PROFILE_HISTORY_DIR = SYNAPPTIC_DIR / "profile_history"
 BENCHMARKS_DIR = SYNAPPTIC_DIR / "benchmarks"
 CONFIG_PATH = SYNAPPTIC_DIR / "config.yaml"
 QUEUE_PATH = SYNAPPTIC_DIR / "queue.txt"
+CURSORS_DIR = SYNAPPTIC_DIR / "cursors"  # per session: byte offset of the transcript already extracted
+PIPELINE_LOCK_PATH = SYNAPPTIC_DIR / "pipeline.lock"  # one extraction at a time (hooks, checkpoint, ingest)
+
+# Checkpoint defaults (extraction of a live session in chunks)
+CHECKPOINT_MIN_TOKENS = 30_000  # a Stop-hook checkpoint waits until this much new conversation exists
+SYNTHESIZE_MIN_HOURS = 6  # a checkpoint re-synthesizes an archetype at most this often (a flush always does)
 
 # Claude Code paths
 CLAUDE_DIR = Path.home() / ".claude"

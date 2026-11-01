@@ -305,12 +305,12 @@ class MetricsStore:
         """Get sessions from the index, sorted by most recently modified."""
         if project:
             rows = self._conn.execute(
-                "SELECT * FROM session_index WHERE project = ? ORDER BY indexed_at DESC, first_timestamp DESC LIMIT ?",
+                "SELECT * FROM session_index WHERE project = ? ORDER BY last_timestamp DESC LIMIT ?",
                 (project, limit),
             ).fetchall()
         else:
             rows = self._conn.execute(
-                "SELECT * FROM session_index ORDER BY indexed_at DESC, first_timestamp DESC LIMIT ?",
+                "SELECT * FROM session_index ORDER BY last_timestamp DESC LIMIT ?",
                 (limit,),
             ).fetchall()
         return [dict(r) for r in rows]
@@ -318,7 +318,7 @@ class MetricsStore:
     def get_indexed_projects(self) -> list[dict]:
         """Get projects from the index with session counts."""
         rows = self._conn.execute(
-            """SELECT project, COUNT(*) as sessions, MAX(first_timestamp) as latest
+            """SELECT project, COUNT(*) as sessions, MAX(last_timestamp) as latest
                FROM session_index GROUP BY project ORDER BY latest DESC""",
         ).fetchall()
         return [dict(r) for r in rows]

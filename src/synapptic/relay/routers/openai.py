@@ -52,7 +52,7 @@ async def proxy_chat_completions(request: Request):
     system_msgs = [m for m in body_json.get("messages", []) if m.get("role") == "system"]
     system_str = " ".join(m.get("content", "") for m in system_msgs)
     system_hash = hashlib.sha256(system_str.encode()).hexdigest()[:12] if system_str else ""
-    session_id = tracker.get_or_create(source_ip, user_agent, system_hash)
+    session_id, _is_new_session = tracker.get_or_create(source_ip, user_agent, system_hash)
     fingerprint = tracker.get_fingerprint(source_ip, user_agent)
     session_key = tracker.get_session_key(source_ip, user_agent, system_hash)
 

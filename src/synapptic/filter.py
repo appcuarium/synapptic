@@ -34,7 +34,41 @@ class Turn:
     boost_reason: str = ""
 
 
-def filter_transcript(jsonl_path: Path, max_tokens: int = DEFAULT_MAX_TOKENS) -> list[Turn]:
+def iter_records(jsonl_path: Path, start: int = 0, end: int | None = None):
+    """Yield (offset just past the line, record) for each JSON line that starts in [start, end).
+
+    Offsets are bytes, so a caller can resume exactly where it stopped. Unparseable lines (a record still
+    being written) are skipped without being yielded.
+    """
+    with open(jsonl_path, "rb") as f:
+        f.seek(start)
+        offset = start
+        for raw in f:
+            if end is not None and offset >= end:
+                break
+            offset += len(raw)
+            line = raw.strip()
+            if not line:
+                continue
+            try:
+                record = json.loads(line)
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                continue
+            yield offset, record
+
+
+def conversation_turn(record: dict) -> Turn | None:
+    """The user or assistant text a record carries, or None for every other record."""
+    record_type = record.get("type")
+    if record_type == "user":
+        return extract_user_turn(record)
+    if record_type == "assistant":
+        return extract_assistant_turn(record)
+    return None
+
+
+def filter_transcript(jsonl_path: Path, max_tokens: int = DEFAULT_MAX_TOKENS,
+                      start: int = 0, end: int | None = None) -> list[Turn]:
     """Stream-parse a session JSONL, extract only preference-relevant content.
 
     Keeps:
@@ -51,36 +85,16 @@ def filter_transcript(jsonl_path: Path, max_tokens: int = DEFAULT_MAX_TOKENS) ->
     - tool_result content blocks (from user messages)
     - tool_use input blocks (the actual file contents, command outputs)
     - thinking blocks from assistant messages
+
+    start/end limit the read to a byte range of the file (a chunk of a long session).
     """
     turns = []
     max_chars = max_tokens * CHARS_PER_TOKEN
 
-    with open(jsonl_path) as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                record = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-
-            record_type = record.get("type")
-
-            # Skip non-conversation records
-            if record_type in ("progress", "file-history-snapshot", "system",
-                               "queue-operation", "last-prompt"):
-                continue
-
-            if record_type == "user":
-                turn = extract_user_turn(record)
-                if turn:
-                    turns.append(turn)
-
-            elif record_type == "assistant":
-                turn = extract_assistant_turn(record)
-                if turn:
-                    turns.append(turn)
+    for _, record in iter_records(jsonl_path, start, end):
+        turn = conversation_turn(record)
+        if turn:
+            turns.append(turn)
 
     # Apply heuristic boosting
     apply_boosts(turns)
@@ -195,6 +209,18 @@ def apply_boosts(turns: list[Turn]):
             turn.boost_reason = "short reply after long response"
 
 
+def _truncate_turn(turn: Turn, share: int):
+    """Cut a turn's text to `share` chars, preferring a sentence end, marked with '...'."""
+    if len(turn.text) > share:
+        cut_point = share - 3
+        for end_char in ('.', '!', '?'):
+            last_end = turn.text.rfind(end_char, int(cut_point * 0.8), cut_point + 1)
+            if last_end != -1:
+                cut_point = last_end + 1
+                break
+        turn.text = turn.text[:cut_point] + "..."
+
+
 def truncate_to_budget(turns: list[Turn], max_chars: int) -> list[Turn]:
     """Truncate turns to fit within character budget.
 
@@ -221,18 +247,18 @@ def truncate_to_budget(turns: list[Turn], max_chars: int) -> list[Turn]:
 
     # If priority turns alone exceed budget, allocate proportionally then truncate
     if priority_chars > max_chars:
+        user_chars = sum(len(t.text) for _, t in priority_turns if t.role == "user")
+        if user_chars <= max_chars:
+            # The user's own words are the signal: keep them whole, trim only the assistant context
+            assistant_chars = priority_chars - user_chars
+            for _, turn in priority_turns:
+                if turn.role != "user":
+                    _truncate_turn(turn, max(4, int((max_chars - user_chars) * len(turn.text) / assistant_chars)))
+            return [turn for _, turn in priority_turns]
         result = []
         for _, turn in priority_turns:
             # Each turn gets a share of budget proportional to its size
-            share = max(4, int(max_chars * len(turn.text) / priority_chars))
-            if len(turn.text) > share:
-                cut_point = share - 3
-                for end_char in ('.', '!', '?'):
-                    last_end = turn.text.rfind(end_char, int(cut_point * 0.8), cut_point + 1)
-                    if last_end != -1:
-                        cut_point = last_end + 1
-                        break
-                turn.text = turn.text[:cut_point] + "..."
+            _truncate_turn(turn, max(4, int(max_chars * len(turn.text) / priority_chars)))
             result.append(turn)
         return result
 

@@ -1,9 +1,14 @@
 """Tests for synapptic.integrate — archetype combination, path resolution."""
 
 from pathlib import Path
-from unittest.mock import patch
 
-from synapptic.integrate import combine_archetypes, resolve_project_root
+from synapptic.integrate import (
+    _apply_target_filter,
+    _combine_profiles,
+    _removed_rules_for_target,
+    combine_archetypes,
+    resolve_project_root,
+)
 
 
 class TestCombineArchetypes:
@@ -63,3 +68,47 @@ class TestResolveProjectRoot:
         result = resolve_project_root(encoded)
         assert result is not None
         assert result == home.resolve()
+
+
+class TestModelFilteringInIntegrate:
+
+    def test_removed_rules_for_target(self):
+        profile = {
+            "dimensions": {
+                "guards": [
+                    {"observation": "NEVER summarize at the end", "weight": 0.9, "model_verdicts": {"gemini": "redundant"}},
+                    {"observation": "ALWAYS read files first", "weight": 0.9, "model_verdicts": {"gemini": "effective"}},
+                ]
+            }
+        }
+        removed = _removed_rules_for_target(profile, "gemini")
+        assert "NEVER summarize at the end" in removed
+        assert "ALWAYS read files first" not in removed
+
+    def test_apply_target_filter_removes_marked_guard_line(self):
+        profile = {
+            "dimensions": {
+                "guards": [
+                    {"observation": "NEVER summarize at the end", "weight": 0.9, "model_verdicts": {"gemini": "redundant"}},
+                    {"observation": "ALWAYS read files first", "weight": 0.9, "model_verdicts": {"gemini": "effective"}},
+                ]
+            }
+        }
+        archetype = """## Guards
+1. NEVER summarize at the end
+2. ALWAYS read files first
+"""
+        filtered, excluded = _apply_target_filter(archetype, profile, "gemini")
+        assert excluded == 1
+        assert "NEVER summarize at the end" not in filtered
+        assert "ALWAYS read files first" in filtered
+
+    def test_combine_profiles_includes_global_and_project_dims(self):
+        gp = {"dimensions": {"guards": [{"observation": "G1"}]}}
+        pp = {"dimensions": {"guards": [{"observation": "G2"}], "workflow": [{"observation": "W1"}]}}
+        combined = _combine_profiles(gp, pp)
+        guard_texts = [x["observation"] for x in combined["dimensions"]["guards"]]
+        assert "G1" in guard_texts
+        assert "G2" in guard_texts
+        assert "workflow" in combined["dimensions"]
+
