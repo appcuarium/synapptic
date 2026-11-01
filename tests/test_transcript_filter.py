@@ -10,8 +10,8 @@ import json
 import yaml
 
 from synapptic import state
-from synapptic.relay import indexer, parse
-from synapptic.relay.store import MetricsStore
+from synapptic.sessions import indexer, parse
+from synapptic.sessions.store import SessionStore
 
 REAL_CWD = "/Users/someone/code/app"
 SCRATCHPAD_CWD = "/private/tmp/claude-501/-Users-someone-code-app/0a1b2c3d/scratchpad/probe/C1"
@@ -36,7 +36,7 @@ def make_projects(tmp_path, monkeypatch):
     projects_dir = tmp_path / ".claude" / "projects"
     projects_dir.mkdir(parents=True)
     monkeypatch.setattr("synapptic.state.CLAUDE_PROJECTS_DIR", projects_dir)
-    monkeypatch.setattr("synapptic.relay.indexer.CLAUDE_PROJECTS_DIR", projects_dir)
+    monkeypatch.setattr("synapptic.sessions.indexer.CLAUDE_PROJECTS_DIR", projects_dir)
     monkeypatch.setattr("synapptic.config.CLAUDE_PROJECTS_DIR", projects_dir)
     monkeypatch.setattr("synapptic.providers.CONFIG_PATH", tmp_path / ".synapptic" / "config.yaml")
     write_transcript(projects_dir, "-Users-someone-code-app", "interactive", REAL_CWD, "cli")
@@ -81,8 +81,8 @@ def test_opt_in_is_read_from_config(tmp_path, monkeypatch):
 def test_indexer_skips_excluded_and_removes_ones_indexed_before(tmp_path, monkeypatch):
     projects_dir = make_projects(tmp_path, monkeypatch)
     db_path = tmp_path / "proxy.db"
-    monkeypatch.setattr("synapptic.relay.indexer.DB_PATH", db_path)
-    store = MetricsStore(db_path)
+    monkeypatch.setattr("synapptic.sessions.indexer.DB_PATH", db_path)
+    store = SessionStore(db_path)
     store.init_db()
     stale = projects_dir / "-private-tmp-claude-501-scratchpad-probe-C1" / "scratchpad.jsonl"
     store.index_session(session_id="scratchpad", project="scratchpad-probe-C1", project_dir=stale.parent.name,
@@ -92,7 +92,7 @@ def test_indexer_skips_excluded_and_removes_ones_indexed_before(tmp_path, monkey
 
     indexer.index_all_sessions(incremental=True)
 
-    store = MetricsStore(db_path)
+    store = SessionStore(db_path)
     store.init_db()
     indexed = store.get_indexed_session_ids()
     store.close()

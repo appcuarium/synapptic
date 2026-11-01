@@ -34,8 +34,8 @@ if [ -z "$SESSION_ID" ]; then
     exit 0
 fi
 
-# Notify relay dashboard immediately (fire-and-forget, relay may not be running)
-curl -sf -X POST http://127.0.0.1:5100/browser/api/session-ended \
+# Tell the dashboard the session closed, so it stops showing it live (fire-and-forget: it may not be running)
+curl -sf -X POST http://127.0.0.1:5200/api/session-ended \
     -H "Content-Type: application/json" \
     -d "{\"session_id\":\"$SESSION_ID\"}" \
     --max-time 2 >/dev/null 2>&1 || true

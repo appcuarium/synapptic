@@ -1,0 +1,156 @@
+/* Theme template, two layers (same values as the approved mockup).
+   1. Primitives: colour scales as RGB channels. Defined once; components never use them directly.
+   2. Semantic tokens: the roles components use. Each theme block maps our roles onto primitives; the
+      shadcn role names (--background, --primary, --sidebar-*, ...) are mapped onto our roles once, below,
+      so shadcn components follow both themes. Adding a theme = one more [data-theme] block.
+   Text: dark (default) = the lighter slate shades; light = the darker teal shades. */
+:root {
+  /* slate, with machine-fe's extra shades (tailwind.config.js: 880, 910, 930) */
+  --slate-50: 248 250 252;  --slate-100: 241 245 249; --slate-200: 226 232 240; --slate-300: 203 213 225;
+  --slate-400: 148 163 184; --slate-500: 100 116 139; --slate-600: 71 85 105;   --slate-700: 51 65 85;
+  --slate-800: 30 41 59;    --slate-880: 20 29 48;    --slate-900: 15 23 42;    --slate-910: 12 20 38;
+  --slate-930: 7 13 31;
+  /* teal, plus teal-25 (half way from teal-50 to white) */
+  --teal-25: 248 254 253;   --teal-50: 240 253 250;   --teal-100: 204 251 241;  --teal-200: 153 246 228;
+  --teal-300: 94 234 212;   --teal-400: 45 212 191;   --teal-500: 20 184 166;   --teal-600: 13 148 136;
+  --teal-700: 15 118 110;   --teal-800: 17 94 89;     --teal-900: 19 78 74;     --teal-950: 4 47 46;
+  /* light teal tints: teal-500 mixed into teal-25 at 10 / 20 / 35% */
+  --teal-tint-1: 225 247 244; --teal-tint-2: 202 240 235; --teal-tint-3: 168 229 221;
+  --rose-500: 244 63 94;
+}
+
+/* :root[...] outweighs the plain :root of the dark default below, whatever the order. */
+:root[data-theme='light'],
+[data-theme='light'] {
+  color-scheme: light;
+  --page: var(--teal-25);
+  --surface: var(--teal-25);
+  --panel-head: var(--teal-tint-1);   /* panel headers: one step off the page, as slate-910 is in dark */
+  --control-fg: var(--teal-900);      /* text on control backgrounds: a shade of the control's teal */
+  --surface-2: var(--teal-tint-1);
+  --control: var(--teal-tint-1);
+  --control-hover: var(--teal-tint-2);
+  --control-active: var(--teal-tint-3);
+  --line: var(--teal-tint-2);
+  --fg: var(--teal-950);
+  --fg-2: var(--teal-900);
+  --fg-muted: var(--teal-800);
+  --fg-subtle: var(--teal-700);
+  --fg-faint: var(--teal-600);
+  --brand: var(--teal-100);
+  --brand-line: var(--teal-200);
+  --brand-hover: var(--teal-300);
+  --brand-icon: var(--teal-700);
+  --brand-icon-hover: var(--teal-900);
+  --brand-active: var(--teal-500);
+  --brand-active-icon: var(--teal-950);
+  --primary: rgb(var(--teal-700));            /* labels, links, "on" (AA on light surfaces) */
+  --primary-hover: rgb(var(--teal-800));
+  --primary-foreground: rgb(var(--teal-50));
+  --primary-strong: rgb(var(--teal-700));     /* filled buttons (Save) */
+  --primary-strong-hover: rgb(var(--teal-600));
+  --primary-strong-foreground: rgb(var(--teal-50));   /* text on a button: a shade of its own colour */
+  /* States on a light page are solid colours (translucent ones wash out over teal-25) */
+  --toggle-on: rgb(var(--teal-700));
+  --toggle-on-hover: rgb(var(--teal-600));
+  --toggle-on-fg: rgb(var(--teal-50));
+  --toggle-off: rgb(var(--teal-tint-2));
+  --toggle-off-hover: rgb(var(--teal-tint-3));
+  --toggle-off-fg: rgb(var(--teal-800));
+  --nav-active: rgb(var(--teal-tint-2));
+  --tile-fg: var(--teal-100);
+  --tile-alpha-min: 0.08;
+  --tile-alpha-span: 0.72;
+  --tile-backdrop: var(--teal-950);
+  --tile-idle-opacity: 1;
+  --tile-divider: var(--slate-880);
+  --overlay: rgb(var(--teal-950) / 0.4);       /* behind the phone drawer */
+  --chart-1: rgb(var(--teal-700));
+  --chart-2: rgb(var(--teal-500));
+  --chart-3: rgb(var(--teal-900));
+  --chart-4: rgb(var(--teal-300));
+  --chart-5: rgb(var(--teal-600));
+}
+
+/* Dark is the default: :root carries it too, so the page is dark even before any script runs. */
+:root,
+[data-theme='dark'] {
+  color-scheme: dark;
+  --page: var(--slate-900);
+  --surface: var(--slate-910);
+  --panel-head: var(--slate-910);
+  --control-fg: var(--slate-200);
+  --surface-2: var(--slate-880);
+  --control: var(--slate-800);
+  --control-hover: var(--slate-700);
+  --control-active: var(--slate-600);
+  --line: var(--slate-800);
+  --fg: var(--slate-100);
+  --fg-2: var(--slate-200);
+  --fg-muted: var(--slate-300);
+  --fg-subtle: var(--slate-400);
+  --fg-faint: var(--slate-500);
+  --brand: var(--teal-900);
+  --brand-line: var(--teal-800);
+  --brand-hover: var(--teal-700);     /* controls on the top bar: hover */
+  --brand-icon: var(--teal-500);      /* icons of "off" controls on the top bar */
+  --brand-icon-hover: var(--teal-300);
+  --brand-active: var(--teal-700);    /* the selected control on the top bar: a filled chip */
+  --brand-active-icon: var(--teal-100);
+  --primary: rgb(var(--teal-400));
+  --primary-hover: rgb(var(--teal-300));
+  --primary-foreground: rgb(var(--slate-900));
+  --primary-strong: rgb(var(--teal-700));
+  --primary-strong-hover: rgb(var(--teal-600));
+  --primary-strong-foreground: rgb(var(--teal-50));
+  /* Machine's translucent states, measured on Strategy Analytics */
+  --toggle-on: color-mix(in oklab, rgb(var(--teal-400)) 20%, transparent);
+  --toggle-on-hover: color-mix(in oklab, rgb(var(--teal-400)) 30%, transparent);
+  --toggle-on-fg: rgb(var(--teal-400));
+  --toggle-off: rgb(var(--slate-700));
+  --toggle-off-hover: rgb(var(--slate-600));
+  --toggle-off-fg: rgb(var(--slate-400));
+  --overlay: rgb(var(--slate-930) / 0.6);      /* behind the phone drawer */
+  --chart-1: rgb(var(--slate-100));
+  --chart-2: rgb(var(--slate-300));
+  --chart-3: rgb(var(--slate-400));
+  --chart-4: rgb(var(--slate-500));
+  --chart-5: rgb(var(--slate-600));
+  --nav-active: color-mix(in oklab, rgb(var(--slate-800)) 60%, transparent);
+  --tile-fg: var(--teal-100);
+  --tile-alpha-min: 0.08;
+  --tile-alpha-span: 0.72;
+  --tile-idle-opacity: 0.75;
+  --tile-backdrop: none;
+  --tile-divider: var(--slate-930);
+}
+
+/* shadcn's role names, mapped onto our roles: one block for every theme. */
+:root,
+[data-theme] {
+  --background: rgb(var(--page));
+  --foreground: rgb(var(--fg));
+  --card: rgb(var(--page));
+  --card-foreground: rgb(var(--fg));
+  --popover: rgb(var(--surface));
+  --popover-foreground: rgb(var(--fg));
+  --secondary: rgb(var(--control));
+  --secondary-foreground: rgb(var(--control-fg));
+  --muted: rgb(var(--surface-2));
+  --muted-foreground: rgb(var(--fg-subtle));
+  --accent: rgb(var(--control));               /* shadcn: hover/selected item background */
+  --accent-foreground: rgb(var(--fg));
+  --destructive: rgb(var(--rose-500));
+  --border: rgb(var(--line));
+  --input: rgb(var(--control));
+  --ring: var(--primary);
+  --radius: 0.25rem;
+  --sidebar: rgb(var(--surface));
+  --sidebar-foreground: rgb(var(--fg-muted));
+  --sidebar-primary: var(--primary);
+  --sidebar-primary-foreground: var(--primary-foreground);
+  --sidebar-accent: rgb(var(--control) / 0.6);
+  --sidebar-accent-foreground: rgb(var(--fg));
+  --sidebar-border: rgb(var(--line));
+  --sidebar-ring: var(--primary);
+}

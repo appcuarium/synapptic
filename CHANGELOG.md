@@ -1,5 +1,26 @@
 # Changelog
 
+## Unreleased
+
+### Removed: the relay
+
+- **`synapptic relay` and `synapptic run` are gone**, with the proxy behind them (the `/v1` routes, the old `/dashboard/` and `/browser/` pages). Session stats come from the transcripts, which cover every session without routing traffic through a local proxy.
+- **The `[relay]` install extra is now `[dashboard]`**: `pip install synapptic[dashboard]` (fastapi, uvicorn with websocket support).
+- **The session index moved from `~/.synapptic/proxy.db` to `~/.synapptic/sessions.db`.** Run `synapptic index --full` once to build it; `proxy.db` can be deleted. The `relay:` section of `config.yaml` is no longer read.
+- **The SessionEnd hook reports closed sessions to the dashboard** (`POST http://127.0.0.1:5200/api/session-ended`) instead of the relay. Re-run `synapptic install` to update the installed hook.
+
+### Dashboard
+
+- **`synapptic dashboard`**: settings and a session browser at `http://127.0.0.1:5200`, one websocket for all data.
+- **Live sessions**: a transcript written in the last 5 minutes and not reported ended pulses lime and leads the strip; new sessions appear before they end.
+
+### Fixes
+
+- **Session titles** come from the transcript's title records (`customTitle`, Claude Code's `aiTitle`) instead of the first message, which was often injected text.
+- **Turns, not records**: tiles and stats count the turns the conversation shows, stored in the index as `turn_count`.
+- **Token stats count each API response once**: Claude Code writes one response as several records with the same usage; summing every record overcounted 3 to 5 times.
+- **Costs use current published rates** for every Claude model, including cache reads, 5-minute and 1-hour cache writes, and Haiku 5.5's long-prompt tier.
+
 ## v0.1.0b5 — 2026-03-25
 
 ### Bug fixes

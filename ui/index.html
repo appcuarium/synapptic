@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>Synapptic</title>
+    <script>
+      // Theme before first paint (no flash). Stored value: 'light' | 'dark' | 'system'; nothing stored = dark
+      // (the default). Kept in step with src/lib/theme.ts.
+      (function () {
+        var saved = null;
+        try { saved = localStorage.getItem('synapptic-theme'); } catch (e) {}
+        var dark = saved === 'light' ? false
+          : saved === 'system' ? window.matchMedia('(prefers-color-scheme: dark)').matches
+          : true;
+        document.documentElement.dataset.theme = dark ? 'dark' : 'light';
+      })();
+    </script>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" />
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

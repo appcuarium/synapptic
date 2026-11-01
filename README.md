@@ -192,39 +192,22 @@ synapptic synthesize -p machine-be         # regenerate archetype
 Your AI coding sessions vanish the moment you close the terminal. **synapptic** brings them back — entirely on your machine.
 
 ```bash
-pip install synapptic[relay]
-synapptic relay enable          # one-time setup
-synapptic index                 # recommended: index your sessions for instant search
-synapptic relay start
+pip install synapptic[dashboard]
+synapptic index                 # index your sessions once (incremental after that)
+synapptic dashboard
 ```
 
-Open `http://localhost:5100/dashboard/` and every conversation you've ever had with Claude Code is there. Searchable. Readable. With full markdown rendering, collapsible tool calls, and token usage per turn. Context compactions are marked so you know exactly where the AI lost its thread.
+Open `http://127.0.0.1:5200/sessions` and every conversation you've had with Claude Code is there, grouped by project. Each session is a tile with its title (the name you gave it, else Claude Code's own title) and its number of turns. Pick one to read the conversation: your messages, the agent's replies, tool calls as chips, and context compactions marked where they happened.
 
-Nothing leaves your machine. The index lives in a local SQLite database. The server runs on localhost. Your sessions, your data, your eyes only.
+Nothing leaves your machine. The dashboard reads the transcripts Claude Code writes to `~/.claude/projects` and keeps a small index in a local SQLite database. The server runs on localhost. Your sessions, your data, your eyes only.
 
-### Pair programming, finally visible
+### Live sessions and what they cost
 
-Active sessions glow green and stream live via WebSocket. The indicator clears automatically when the session closes — no stale green dots. You code in the terminal — your pair watches the full conversation unfold on a second screen, formatted and navigable. No screen sharing. No "can you scroll up?" No squinting at terminal output. Just open the browser and follow along.
+Sessions that are running right now pulse lime and sit at the front of the strip. The marker clears when the session closes: the SessionEnd hook tells the dashboard, so there are no stale indicators.
 
-Click any session — active or historical — to see its token usage and estimated cost, read directly from the JSONL conversation file. For active sessions running through the relay, the metrics bar updates live: requests, input/output tokens, cache usage, and estimated cost pushed via WebSocket, no polling.
+Under the conversation, every session shows its API requests, input, output and cache tokens, and its estimated cost at each model's published rates. The numbers come straight from the `usage` Claude Code records with every API response, each response counted once. No proxy, nothing between Claude and the API: it works for every session, terminal or desktop app.
 
-### One command to see everything
-
-```bash
-synapptic run claude                     # launch Claude through the relay
-synapptic run claude -r "my session"     # resume a session
-synapptic run cursor .                   # works with Cursor, Copilot, Aider, Codex, Windsurf
-```
-
-Your tool launches as normal. When you're done:
-
-```
-Session ended.
-  Requests: 47 | Input: 245.3k tok | Output: 12.1k tok
-  Cache: 180.2k read, 45.0k created
-```
-
-No cloud. No account. No configuration. Just `synapptic run` instead of `claude` and you see what your AI actually costs per session.
+The same dashboard holds your settings (provider, model, API key, Message Batches), saved to `~/.synapptic/config.yaml`, the file the CLI uses.
 
 ## Automatic background processing
 
@@ -298,16 +281,9 @@ synapptic results list --provider ollama                  # filter by provider
 synapptic results metrics                                 # token usage stats (Ollama)
 synapptic results compare <prov1> <model1> <prov2> <model2>  # compare two models
 
-# Relay + session browser
-synapptic relay enable              # configure the relay
-synapptic relay start               # start the server (foreground)
-synapptic relay start -d            # start as daemon
-synapptic relay stop                # stop the daemon
-synapptic relay status              # show status + daily token totals
-synapptic run claude                # launch tool through relay
-synapptic run claude -r "session"   # resume with all args passed through
-synapptic run cursor .              # any tool: cursor, copilot, aider, codex, windsurf
-synapptic index                     # index all sessions for search + fast browsing
+# Dashboard + session browser
+synapptic dashboard                 # settings and sessions at http://127.0.0.1:5200
+synapptic index                     # index new sessions (titles, turns) for the browser
 synapptic index --full              # re-index everything
 
 # Maintenance
@@ -335,8 +311,7 @@ synapptic uninstall                 # clean removal (asks before deleting data)
 │   └── ...
 ├── benchmarks/              # test caches + results
 ├── profile_history/         # versioned snapshots for rollback
-├── proxy.db                 # session index + relay metrics (SQLite)
-├── relay.log                # relay daemon log
+├── sessions.db              # session index for the dashboard (SQLite, rebuilt by `synapptic index --full`)
 └── token_metrics.jsonl      # token usage log (append-only)
 ```
 
@@ -397,7 +372,6 @@ Found a bug or have a suggestion? [Open an issue](https://github.com/appcuarium/
 - **New session sources** — parsers for Cursor, Copilot, or Aider session logs
 - **Extraction patterns** — custom prompt.md patterns for security, performance, accessibility, or team-specific conventions
 - **Browser UI** — the session browser is functional but young. Better markdown rendering, keyboard navigation, session diffing
-- **Relay providers** — the relay currently supports Anthropic and OpenAI. Gemini, Groq, and local model relaying would be valuable
 
 **How to contribute:**
 

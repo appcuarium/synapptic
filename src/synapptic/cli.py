@@ -4,6 +4,7 @@ import json
 import os
 import shutil
 import sys
+import time
 from pathlib import Path
 
 import click
@@ -18,7 +19,8 @@ from synapptic.pipeline import (
     rebuild_profiles,
     submit_checkpoint_batch,
 )
-from synapptic.relay import config as relay_settings
+from synapptic.sessions.indexer import index_all_sessions
+from synapptic.sessions.store import DB_PATH as SESSIONS_DB_PATH, SessionStore
 from synapptic.synthesize import synthesize_archetype
 from synapptic.state import (
     archetype_age_hours,
@@ -1602,189 +1604,34 @@ def save_settings_json(path: Path, settings: dict):
 
 
 # ─────────────────────────────────────────────
-# Relay commands
+# Dashboard and session index
 # ─────────────────────────────────────────────
 
-def check_relay_deps():
-    """Check if relay optional dependencies are installed."""
+def check_dashboard_deps():
+    """Check if the dashboard's optional dependencies are installed."""
     try:
         import fastapi
-        import httpx
         import uvicorn
         return True
     except ImportError:
-        click.echo("Relay dependencies not installed. Run: pip install synapptic[relay]", err=True)
+        click.echo("Dashboard dependencies not installed. Run: pip install synapptic[dashboard]", err=True)
         return False
 
 
-@cli.group("relay")
-def relay_group():
-    """Local LLM relay server — intercepts API calls for metrics and session tracking."""
-    pass
-
-
-@relay_group.command("enable")
-@click.option("--port", type=int, default=5100, help="Relay port (default: 5100)")
-def relay_enable(port):
-    """Enable the relay and write config."""
-    if not check_relay_deps():
+@cli.command("dashboard")
+@click.option("--host", default="127.0.0.1", help="Address to bind (default: 127.0.0.1, this machine only)")
+@click.option("--port", type=int, default=5200, help="Port (default: 5200)")
+def dashboard_command(host, port):
+    """Start the dashboard: settings and the session browser."""
+    if not check_dashboard_deps():
         return
-    from synapptic.providers import load_config, save_config
-    config = load_config()
-    config["relay"] = {"enabled": True, "port": port, "host": "127.0.0.1"}
-    save_config(config)
-    click.echo(f"Relay enabled on port {port}.")
-    click.echo(f"  Run: synapptic index        # index your sessions for fast browsing + search")
-    click.echo(f"  Run: synapptic relay start   # start the server")
-
-
-@relay_group.command("disable")
-def relay_disable():
-    """Disable the relay."""
-    from synapptic.providers import load_config, save_config
-    config = load_config()
-    config.pop("relay", None)
-    save_config(config)
-    click.echo("Relay disabled.")
-
-
-@relay_group.command("start")
-@click.option("-d", "--daemon", is_flag=True, help="Run in background")
-def relay_start(daemon):
-    """Start the relay server."""
-    if not check_relay_deps():
-        return
-    from synapptic.providers import load_config
-    config = load_config()
-    relay_config = config.get("relay", {})
-    if not relay_config.get("enabled"):
-        click.echo("Relay not enabled. Run: synapptic relay enable")
-        return
-
-    host = relay_config.get("host", "127.0.0.1")
-    port = relay_config.get("port", 5100)
-
-    if daemon:
-        import subprocess
-        import sys
-        log_path = Path.home() / ".synapptic" / "relay.log"
-        pid_path = Path("/tmp/synapptic-relay.pid")
-        log_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(log_path, "w") as log_file:
-            proc = subprocess.Popen(
-                [sys.executable, "-m", "uvicorn", "synapptic.relay.app:create_app",
-                 "--factory", "--host", host, "--port", str(port)],
-                stdout=log_file, stderr=log_file,
-                start_new_session=True,
-            )
-        pid_path.write_text(str(proc.pid))
-        click.echo(f"Relay started in background (PID {proc.pid}, log: {log_path})")
-        click.echo(f"Dashboard: http://{host}:{port}/dashboard/")
-    else:
-        import uvicorn
-        uvicorn.run(
-            "synapptic.relay.app:create_app",
-            factory=True,
-            host=host,
-            port=port,
-            log_level="info",
-        )
-
-
-@relay_group.command("stop")
-def relay_stop():
-    """Stop the relay daemon."""
-    import signal
-    pid_path = Path("/tmp/synapptic-relay.pid")
-    if not pid_path.exists():
-        click.echo("No relay PID file found.")
-        return
-    pid = int(pid_path.read_text().strip())
-    try:
-        os.kill(pid, signal.SIGTERM)
-        click.echo(f"Relay stopped (PID {pid}).")
-    except ProcessLookupError:
-        click.echo(f"Relay already stopped (stale PID {pid}).")
-    pid_path.unlink(missing_ok=True)
-
-
-@relay_group.command("status")
-def relay_status():
-    """Show relay status and daily metrics."""
-    pid_path = Path("/tmp/synapptic-relay.pid")
-    running = False
-    if pid_path.exists():
-        pid = int(pid_path.read_text().strip())
-        try:
-            os.kill(pid, 0)
-            running = True
-            click.echo(f"Relay: running (PID {pid})")
-        except ProcessLookupError:
-            click.echo("Relay: stopped (stale PID file)")
-            pid_path.unlink(missing_ok=True)
-    else:
-        click.echo("Relay: not running")
-
-    # Show daily totals from SQLite if available
-    db_path = relay_settings.DB_PATH
-    if db_path.exists():
-        try:
-            from synapptic.relay.store import MetricsStore
-            store = MetricsStore(db_path)
-            store.init_db()
-            totals = store.get_daily_totals()
-            store.close()
-            click.echo(f"\nToday's totals:")
-            click.echo(f"  Requests: {totals.get('request_count', 0)}")
-            click.echo(f"  Input tokens: {totals.get('input_tokens', 0):,}")
-            click.echo(f"  Output tokens: {totals.get('output_tokens', 0):,}")
-            click.echo(f"  Cache read: {totals.get('cache_read_tokens', 0):,}")
-            click.echo(f"  Cache created: {totals.get('cache_creation_tokens', 0):,}")
-        except Exception:
-            pass
-
-    from synapptic.providers import load_config
-    config = load_config()
-    relay_config = config.get("relay", {})
-    if relay_config.get("enabled"):
-        port = relay_config.get("port", 5100)
-        click.echo(f"\nConfig: enabled, port {port}")
-        if running:
-            click.echo(f"Dashboard: http://127.0.0.1:{port}/dashboard/")
-    else:
-        click.echo("\nConfig: disabled")
-
-
-# ─────────────────────────────────────────────
-# Run command — launch tool through relay
-# ─────────────────────────────────────────────
-
-TOOL_REGISTRY = {
-    "claude": {
-        "command": ["claude"],
-        "env": {"ANTHROPIC_BASE_URL": "{relay_url}"},
-    },
-    "cursor": {
-        "command": ["cursor"],
-        "env": {"ANTHROPIC_BASE_URL": "{relay_url}", "OPENAI_BASE_URL": "{relay_url}"},
-    },
-    "copilot": {
-        "command": ["gh", "copilot"],
-        "env": {"OPENAI_BASE_URL": "{relay_url}"},
-    },
-    "aider": {
-        "command": ["aider"],
-        "env": {"OPENAI_API_BASE": "{relay_url}"},
-    },
-    "codex": {
-        "command": ["codex"],
-        "env": {"OPENAI_BASE_URL": "{relay_url}"},
-    },
-    "windsurf": {
-        "command": ["windsurf"],
-        "env": {"ANTHROPIC_BASE_URL": "{relay_url}", "OPENAI_BASE_URL": "{relay_url}"},
-    },
-}
+    # fastapi/uvicorn are the optional [dashboard] extra: imported only after the check above
+    import uvicorn
+    from synapptic.dashboard.app import STATIC_DIR, create_app
+    if not (STATIC_DIR / "index.html").exists():
+        click.echo("The dashboard UI is not built. Run: npm --prefix ui install && npm --prefix ui run build", err=True)
+    click.echo(f"Dashboard: http://{host}:{port}/")
+    uvicorn.run(create_app(), host=host, port=port, log_level="info")
 
 
 @cli.command("index")
@@ -1792,175 +1639,19 @@ TOOL_REGISTRY = {
 @click.option("-v", "--verbose", is_flag=True, help="Show progress")
 def index_sessions(full, verbose):
     """Index all Claude Code sessions into SQLite for fast browsing and search."""
-    if not check_relay_deps():
-        return
-    import time
-    from synapptic.relay.indexer import index_all_sessions
-    from synapptic.relay.store import MetricsStore
-    from synapptic.relay.config import DB_PATH
-
-    store = MetricsStore(DB_PATH)
+    store = SessionStore(SESSIONS_DB_PATH)
     store.init_db()
-    before = store.get_index_count()
     store.close()
 
     start = time.time()
     indexed = index_all_sessions(incremental=not full, verbose=verbose)
     elapsed = time.time() - start
 
-    store = MetricsStore(DB_PATH)
+    store = SessionStore(SESSIONS_DB_PATH)
     store.init_db()
     total = store.get_index_count()
     store.close()
 
     click.echo(f"Indexed {indexed} new sessions in {elapsed:.1f}s ({total} total)")
     if indexed > 0:
-        click.echo(f"Database: {DB_PATH}")
-
-
-@cli.command("run", context_settings={"ignore_unknown_options": True, "allow_extra_args": True})
-@click.argument("tool")
-@click.pass_context
-def run_tool(ctx, tool):
-    """Launch an AI tool through the relay for token tracking.
-
-    All extra arguments are passed through to the tool.
-    Example: synapptic run claude -r "my session" --model opus
-    """
-    if not check_relay_deps():
-        return
-
-    import signal
-    import subprocess
-    import sys
-    import time
-    import urllib.request
-
-    from synapptic.providers import load_config, save_config
-
-    # Ensure relay is enabled
-    config = load_config()
-    relay_config = config.get("relay", {})
-    if not relay_config.get("enabled"):
-        config["relay"] = {"enabled": True, "port": 5100, "host": "127.0.0.1"}
-        save_config(config)
-        relay_config = config["relay"]
-
-    host = relay_config.get("host", "127.0.0.1")
-    port = relay_config.get("port", 5100)
-    relay_url = f"http://{host}:{port}"
-    pid_path = Path("/tmp/synapptic-relay.pid")
-    log_path = Path.home() / ".synapptic" / "relay.log"
-    log_path.parent.mkdir(parents=True, exist_ok=True)
-
-    # Check if relay is already running (another synapptic run session)
-    relay_already_running = False
-    if pid_path.exists():
-        old_pid = int(pid_path.read_text().strip())
-        try:
-            os.kill(old_pid, 0)  # just check, don't kill
-            relay_already_running = True
-        except ProcessLookupError:
-            pid_path.unlink(missing_ok=True)
-
-    # Start relay if not already running
-    relay_proc = None
-    if relay_already_running:
-        click.echo(f"Relay already running on {relay_url}")
-    else:
-        with open(log_path, "w") as log_file:
-            relay_proc = subprocess.Popen(
-                [sys.executable, "-m", "uvicorn", "synapptic.relay.app:create_app",
-                 "--factory", "--host", host, "--port", str(port), "--log-level", "warning"],
-                stdout=log_file, stderr=log_file,
-                start_new_session=True,
-            )
-        pid_path.write_text(str(relay_proc.pid))
-
-    # Wait for relay to be ready
-    ready = False
-    for attempt in range(20):
-        try:
-            urllib.request.urlopen(f"{relay_url}/dashboard/api/stats", timeout=1)
-            ready = True
-            break
-        except Exception:
-            time.sleep(0.25)
-
-    if not ready:
-        click.echo("Failed to start relay. Check ~/.synapptic/relay.log", err=True)
-        if relay_proc:
-            relay_proc.terminate()
-        pid_path.unlink(missing_ok=True)
-        return
-
-    # Always open dashboard on run
-    try:
-        subprocess.Popen(["open", f"{relay_url}/dashboard/"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    except Exception:
-        pass
-
-    # Build tool command + env
-    tool_info = TOOL_REGISTRY.get(tool, {"command": [tool], "env": {"ANTHROPIC_BASE_URL": "{relay_url}", "OPENAI_BASE_URL": "{relay_url}"}})
-    tool_cmd = tool_info["command"] + ctx.args
-    tool_env = dict(os.environ)
-    for key, val in tool_info["env"].items():
-        tool_env[key] = val.replace("{relay_url}", relay_url)
-
-    env_display = ", ".join(f"{k}={v}" for k, v in tool_info["env"].items()).replace("{relay_url}", relay_url)
-    click.echo(f"synapptic relay running on {relay_url}")
-    click.echo(f"  {env_display}")
-    click.echo(f"  dashboard: {relay_url}/dashboard/")
-    click.echo(f"  launching: {' '.join(tool_cmd)}")
-    click.echo()
-
-    # Run the tool — Ctrl+C goes to it, not us
-    tool_proc = subprocess.Popen(tool_cmd, env=tool_env)
-
-    try:
-        tool_proc.wait()
-    except KeyboardInterrupt:
-        # First Ctrl+C — tool should handle it
-        try:
-            tool_proc.wait(timeout=2)
-        except (subprocess.TimeoutExpired, KeyboardInterrupt):
-            # Second Ctrl+C within 2s — force kill everything
-            tool_proc.terminate()
-            try:
-                tool_proc.wait(timeout=3)
-            except subprocess.TimeoutExpired:
-                tool_proc.kill()
-
-    # Print token summary
-    click.echo()
-    db_path = relay_settings.DB_PATH
-    if db_path.exists():
-        try:
-            from synapptic.relay.store import MetricsStore
-            from synapptic.relay.config import MODEL_PRICING, DEFAULT_PRICING
-            store = MetricsStore(db_path)
-            store.init_db()
-            totals = store.get_daily_totals()
-            store.close()
-
-            input_tok = totals.get("input_tokens", 0)
-            output_tok = totals.get("output_tokens", 0)
-            cache_read = totals.get("cache_read_tokens", 0)
-            cache_create = totals.get("cache_creation_tokens", 0)
-            requests = totals.get("request_count", 0)
-
-            click.echo("Session ended.")
-            click.echo(f"  Requests: {requests} | Input: {input_tok:,} tok | Output: {output_tok:,} tok")
-            if cache_read or cache_create:
-                click.echo(f"  Cache: {cache_read:,} read, {cache_create:,} created")
-        except Exception:
-            pass
-
-    # Mark this relay session as ended (keeps relay running for other sessions)
-    try:
-        urllib.request.urlopen(
-            urllib.request.Request(f"{relay_url}/dashboard/api/end-session", method="POST"),
-            timeout=2,
-        )
-    except Exception:
-        pass
+        click.echo(f"Database: {SESSIONS_DB_PATH}")

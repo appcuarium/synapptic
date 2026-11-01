@@ -1,0 +1,143 @@
+@import 'tailwindcss';
+@import './tokens.css';
+
+/* Touch screens (pointer: coarse): larger hit targets, used as touch:h-11 etc. */
+@custom-variant touch (@media (pointer: coarse));
+/* shadcn components style dark mode with `dark:`; our themes switch on data-theme, not a .dark class. */
+@custom-variant dark (&:where([data-theme='dark'], [data-theme='dark'] *));
+
+/* Tailwind reads colours from the semantic tokens (tokens.css), never from a fixed shade, so one class
+   works in every theme. `inline` keeps the var() so a theme switch re-resolves it; opacity modifiers
+   (bg-primary/20) work through color-mix. */
+@theme inline {
+  --font-sans: Inter, system-ui, sans-serif;
+  --font-mono: Inter, system-ui, sans-serif;   /* all text is Inter, code included */
+
+  /* our roles */
+  --color-page: rgb(var(--page));
+  --color-surface: rgb(var(--surface));
+  --color-surface-2: rgb(var(--surface-2));
+  --color-panel-head: rgb(var(--panel-head));
+  --color-control-fg: rgb(var(--control-fg));
+  --color-control: rgb(var(--control));
+  --color-control-hover: rgb(var(--control-hover));
+  --color-control-active: rgb(var(--control-active));
+  --color-line: rgb(var(--line));
+  --color-fg: rgb(var(--fg));
+  --color-fg-2: rgb(var(--fg-2));
+  --color-fg-muted: rgb(var(--fg-muted));
+  --color-fg-subtle: rgb(var(--fg-subtle));
+  --color-fg-faint: rgb(var(--fg-faint));
+  --color-brand: rgb(var(--brand));
+  --color-brand-line: rgb(var(--brand-line));
+  --color-brand-hover: rgb(var(--brand-hover));
+  --color-brand-icon: rgb(var(--brand-icon));
+  --color-brand-icon-hover: rgb(var(--brand-icon-hover));
+  --color-brand-active: rgb(var(--brand-active));
+  --color-brand-active-icon: rgb(var(--brand-active-icon));
+  --color-tile-fg: rgb(var(--tile-fg));
+  --color-tile-divider: rgb(var(--tile-divider));
+  --color-primary-hover: var(--primary-hover);
+  --color-primary-strong: var(--primary-strong);
+  --color-primary-strong-hover: var(--primary-strong-hover);
+  --color-primary-strong-foreground: var(--primary-strong-foreground);
+  --color-toggle-on: var(--toggle-on);
+  --color-toggle-on-hover: var(--toggle-on-hover);
+  --color-toggle-on-fg: var(--toggle-on-fg);
+  --color-toggle-off: var(--toggle-off);
+  --color-toggle-off-hover: var(--toggle-off-hover);
+  --color-toggle-off-fg: var(--toggle-off-fg);
+  --color-nav-active: var(--nav-active);
+  --color-overlay: var(--overlay);
+
+  /* shadcn roles */
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+
+  /* A live session's tile: one lime for every live session (not shaded by length), pulsing down to a darker
+     lime and back (animate-live), a 3s cycle */
+  --animate-live: live 3s ease-in-out infinite;
+  @keyframes live {
+    0%, 100% { background-color: var(--color-lime-600); }
+    50% { background-color: var(--color-lime-800); }
+  }
+
+  /* shadcn's buttons, inputs and selects use rounded-md: 2px, the mockup's corners (Machine is flat) */
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+}
+
+@layer base {
+  /* Tailwind 4's default border colour is currentColor; shadcn's components (sidebar edge, sheet, inputs)
+     expect the theme's line colour. This is the rule shadcn's init adds. */
+  *,
+  ::before,
+  ::after {
+    border-color: var(--border);
+  }
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+  body {
+    @apply bg-page text-fg-2 font-sans;
+  }
+  :focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: -2px;
+  }
+  .num {
+    font-variant-numeric: tabular-nums;
+  }
+  /* Machine's TileStripShell: hidden scrollbar, grab cursor, brighter tile on hover */
+  .strip-scroll {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+    cursor: grab;
+  }
+  .strip-scroll::-webkit-scrollbar {
+    display: none;
+  }
+  .strategy-tile:hover {
+    filter: brightness(1.15);
+  }
+  .gutter {
+    padding-left: max(16px, env(safe-area-inset-left, 0px));
+    padding-right: max(16px, env(safe-area-inset-right, 0px));
+  }
+  @media (prefers-reduced-motion: reduce) {
+    * {
+      transition: none !important;
+    }
+  }
+}

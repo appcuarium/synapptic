@@ -27,10 +27,6 @@ class TestCliHelp:
         assert result.exit_code == 0
         assert "show" in result.output
 
-    def test_relay_help(self, runner):
-        result = runner.invoke(cli, ["relay", "--help"])
-        assert result.exit_code == 0
-
 
 class TestConfigShow:
 

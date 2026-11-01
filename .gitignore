@@ -9,3 +9,7 @@ build/
 .DS_Store
 .claude/settings.local.json
 ui/mockup/
+ui/node_modules/
+ui/*.tsbuildinfo
+# Vite build output (built in the release step; decision pending: commit it or build at release)
+src/synapptic/dashboard/static/
