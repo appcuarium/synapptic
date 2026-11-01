@@ -412,6 +412,8 @@ CONNECTORS = {
     "claude-cli": {"settings": {}, "capabilities": {"batches": False}},
     "anthropic": {
         "settings": {"max_output_tokens": {"param": "max_tokens", "default": ANTHROPIC_MAX_TOKENS}},
+        # Message Batches: every current Claude model on the Claude API (per-model exceptions go in
+        # "model_capabilities": {model: {"batches": False}}).
         "capabilities": {"batches": True},
     },
     "openai": {"settings": OPENAI_COMPATIBLE_SETTINGS, "capabilities": {"batches": False}},
@@ -459,9 +461,34 @@ def native_params(provider: str, model: str, config: dict, temperature: float | 
     return params
 
 
-def provider_supports(provider: str, capability: str) -> bool:
-    """True if the provider's connector declares the capability (e.g. "batches")."""
-    return bool(CONNECTORS.get(provider, {}).get("capabilities", {}).get(capability))
+def provider_supports(provider: str, capability: str, model: str | None = None) -> bool:
+    """True if the connector declares the capability (e.g. "batches") for this provider and model.
+
+    A model can override its provider: CONNECTORS[provider]["model_capabilities"][model][capability].
+    """
+    connector = CONNECTORS.get(provider, {})
+    model_capabilities = connector.get("model_capabilities", {}).get(model, {})
+    if capability in model_capabilities:
+        return bool(model_capabilities[capability])
+    return bool(connector.get("capabilities", {}).get(capability))
+
+
+# Parts of the pipeline that can use Message Batches, with a description for the setting. Batching is the
+# user's choice per consumer (config["batches"][consumer]) and is off until they turn it on. Only extraction
+# has a batch path today: its results are collected at the next checkpoint.
+BATCH_CONSUMERS = {
+    "extract": "Extraction (half price; results collected at the next checkpoint instead of right away)",
+}
+
+
+def batches_enabled(config: dict, consumer: str) -> bool:
+    """True when this consumer should batch: the provider and model support batches, and the user turned
+    batching on for the consumer (config["batches"][consumer]; off when never set)."""
+    if not provider_supports(config.get("provider", ""), "batches", config.get("model")):
+        return False
+    choices = config.get("batches")
+    choices = choices if isinstance(choices, dict) else {}
+    return bool(choices.get(consumer, False))
 
 
 def migrate_legacy_settings(config: dict) -> bool:

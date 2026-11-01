@@ -13,6 +13,7 @@ CONFIG_PATH = SYNAPPTIC_DIR / "config.yaml"
 QUEUE_PATH = SYNAPPTIC_DIR / "queue.txt"
 CURSORS_DIR = SYNAPPTIC_DIR / "cursors"  # per session: byte offset of the transcript already extracted
 PIPELINE_LOCK_PATH = SYNAPPTIC_DIR / "pipeline.lock"  # one extraction at a time (hooks, checkpoint, ingest)
+BATCHES_DIR = SYNAPPTIC_DIR / "batches"  # submitted Message Batches awaiting collection, plus chunks to retry
 
 # Checkpoint defaults (extraction of a live session in chunks)
 CHECKPOINT_MIN_TOKENS = 30_000  # a Stop-hook checkpoint waits until this much new conversation exists

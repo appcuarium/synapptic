@@ -12,12 +12,19 @@ import yaml
 from synapptic import providers
 from synapptic.config import CHECKPOINT_MIN_TOKENS, SYNAPPTIC_DIR, SYNTHESIZE_MIN_HOURS
 from synapptic.integrate import integrate_archetypes
-from synapptic.pipeline import checkpoint_session, rebuild_profiles
+from synapptic.pipeline import (
+    checkpoint_session,
+    collect_batches,
+    rebuild_profiles,
+    submit_checkpoint_batch,
+)
 from synapptic.relay import config as relay_settings
 from synapptic.synthesize import synthesize_archetype
 from synapptic.state import (
     archetype_age_hours,
     ensure_dirs,
+    load_pending_batches,
+    load_retry_chunks,
     pipeline_lock,
     remove_chunk_observations,
     save_cursor,
@@ -83,7 +90,12 @@ def config_show():
             value = sent.get(spec["param"], "not sent")
             source = "set" if name in config.get("settings", {}) else "default"
             click.echo(f"  {name:18} -> {spec['param']:12} {value} ({source})")
-    click.echo(f"Batches:         {'available' if providers.provider_supports(provider, 'batches') else 'not available'}")
+    if providers.provider_supports(provider, "batches", model):
+        uses = ", ".join(f"{consumer} {'on' if providers.batches_enabled(config, consumer) else 'off'}"
+                         for consumer in providers.BATCH_CONSUMERS)
+        click.echo(f"Batches:         {uses}")
+    else:
+        click.echo("Batches:         not available for this provider and model")
 
     click.echo(f"Config file:     ~/.synapptic/config.yaml")
 
@@ -150,6 +162,9 @@ def config_provider():
         if new_key:
             config["api_key"] = new_key
 
+    # Message Batches: asked only where this provider and model support them
+    ask_batch_settings(config)
+
     # API URL
     if info.get("requires_url") or info.get("default_url"):
         default_url = info.get("default_url", config.get("api_url", ""))
@@ -163,6 +178,31 @@ def config_provider():
         click.echo(f"  Connection OK (model replied: {reply[:40]!r})")
     else:
         click.echo("  Connection FAILED - see the error above; fix it and run `synapptic config provider` again")
+
+
+def ask_batch_settings(config: dict):
+    """Ask, for each consumer that can batch, whether to use Message Batches; stored in config["batches"].
+    Asks nothing when the configured provider and model do not support batches."""
+    if not providers.provider_supports(config.get("provider", ""), "batches", config.get("model")):
+        return
+    choices = config.get("batches") if isinstance(config.get("batches"), dict) else {}
+    for consumer, description in providers.BATCH_CONSUMERS.items():
+        choices[consumer] = click.confirm(f"Use Message Batches for {description}?",
+                                          default=bool(choices.get(consumer, False)))
+    config["batches"] = choices
+
+
+@config_group.command("batches")
+def config_batches():
+    """Turn Message Batches on or off for each part of the pipeline that supports them."""
+    config = providers.load_config()
+    if not providers.provider_supports(config.get("provider", ""), "batches", config.get("model")):
+        click.echo(f"Message Batches are not available for {config.get('provider')} / {config.get('model')}.")
+        return
+    ask_batch_settings(config)
+    providers.save_config(config)
+    for consumer in providers.BATCH_CONSUMERS:
+        click.echo(f"  {consumer}: {'on' if providers.batches_enabled(config, consumer) else 'off'}")
 
 
 @config_group.command("mode")
@@ -1125,6 +1165,46 @@ def integrate(project):
         click.echo("Nothing to integrate (no archetype or no memory directory).")
 
 
+def echo_collected(collected: dict):
+    """Report what a batch collection saved, retried or left pending."""
+    if collected["batches"] or collected["pending"]:
+        click.echo(f"Batches: {collected['batches']} collected ({collected['chunks']} chunk(s), "
+                   f"{collected['observations']} obs, {collected['retried']} to retry), "
+                   f"{collected['pending']} still processing")
+
+
+@cli.group("batches")
+def batches_group():
+    """Message Batches submitted by checkpoints (Anthropic API)."""
+
+
+@batches_group.command("status")
+def batches_status():
+    """List submitted batches that have not been collected yet."""
+    pending = load_pending_batches()
+    retry = load_retry_chunks()
+    if not pending and not retry:
+        click.echo("No batches pending.")
+    for record in pending:
+        click.echo(f"{record['batch_id']}  submitted {record['submitted'][:19]}  {record['model']}  "
+                   f"{len(record['chunks'])} chunk(s)")
+    if retry:
+        click.echo(f"{len(retry)} chunk(s) waiting to be resubmitted")
+
+
+@batches_group.command("collect")
+def batches_collect():
+    """Collect every finished batch now and rebuild the profiles."""
+    config = providers.load_config()
+    with pipeline_lock(wait=True):
+        collected = collect_batches(config.get("api_key", ""))
+        echo_collected(collected)
+        if not (collected["batches"] or collected["pending"]):
+            click.echo("No batches pending.")
+        if collected["chunks"]:
+            echo_rebuilt(rebuild_profiles())
+
+
 @cli.command()
 @click.option("--session", "-s", required=True, help="Session UUID to checkpoint")
 @click.option("--flush", is_flag=True, help="Take everything up to the end of the transcript (PreCompact, SessionEnd)")
@@ -1145,12 +1225,28 @@ def checkpoint(session, flush, min_tokens, max_tokens, synthesize_after):
             click.echo(f"{session[:8]}... another extraction is running; the next checkpoint picks this up")
             return
         context = merge_profiles_for_context(load_profile(project_slug=None), load_profile(project_slug=slug))
-        report = checkpoint_session(session, path, slug, flush, max_tokens, min_tokens, llm_config,
-                                    profile=context if context.get("dimensions") else None)
-        click.echo(f"{session[:8]}... [{slug}] bytes {report['start']}-{report['cursor']}: "
-                   f"{report['chunks']} chunk(s), {report['observations']} obs"
-                   + (" (extraction failed, will retry)" if report["failed"] else ""))
-        changed = rebuild_profiles() if report["chunks"] else []
+        profile = context if context.get("dimensions") else None
+        # Batches already submitted are collected whatever the current setting, so turning batching off
+        # never strands one.
+        collected = collect_batches(llm_config.get("api_key", "")) if load_pending_batches() else None
+        if collected:
+            echo_collected(collected)
+        if providers.batches_enabled(llm_config, "extract"):
+            report = submit_checkpoint_batch(session, path, slug, flush, max_tokens, min_tokens, llm_config,
+                                             profile=profile)
+            click.echo(f"{session[:8]}... [{slug}] bytes {report['start']}-{report['cursor']}: "
+                       f"{report['submitted']} chunk(s) submitted as batch {report['batch_id']}"
+                       + (" (submission failed, will retry)" if report["failed"] else ""))
+            extracted = 0
+        else:
+            report = checkpoint_session(session, path, slug, flush, max_tokens, min_tokens, llm_config,
+                                        profile=profile)
+            click.echo(f"{session[:8]}... [{slug}] bytes {report['start']}-{report['cursor']}: "
+                       f"{report['chunks']} chunk(s), {report['observations']} obs"
+                       + (" (extraction failed, will retry)" if report["failed"] else ""))
+            extracted = report["chunks"]
+        extracted += collected["chunks"] if collected else 0
+        changed = rebuild_profiles() if extracted else []
         if changed:
             echo_rebuilt(changed)
     # The throttle applies to every checkpoint, PreCompact flushes included: a long session compacts several

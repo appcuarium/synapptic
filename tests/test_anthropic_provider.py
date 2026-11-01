@@ -93,7 +93,7 @@ def test_setup_keeps_the_saved_model_preselected_while_it_is_offered(api, tmp_pa
     providers.save_config({"provider": "anthropic", "model": "claude-opus-5-5", "api_key": "test-key"})
     choice = list(PROVIDERS).index("anthropic") + 1
 
-    result = CliRunner().invoke(cli, ["config", "provider"], input=f"{choice}\n\n\n")
+    result = CliRunner().invoke(cli, ["config", "provider"], input=f"{choice}\n\n\n\n")
 
     assert result.exit_code == 0, result.output
     assert load_config()["model"] == "claude-opus-5-5"
@@ -105,7 +105,7 @@ def test_setup_preselects_the_default_when_the_saved_model_was_retired(api, tmp_
     providers.save_config({"provider": "anthropic", "model": "claude-sonnet-4-20250514", "api_key": "test-key"})
     choice = list(PROVIDERS).index("anthropic") + 1
 
-    result = CliRunner().invoke(cli, ["config", "provider"], input=f"{choice}\n\n\n")
+    result = CliRunner().invoke(cli, ["config", "provider"], input=f"{choice}\n\n\n\n")
 
     assert result.exit_code == 0, result.output
     assert load_config()["model"] == PROVIDERS["anthropic"]["default_model"]
@@ -141,7 +141,7 @@ def test_setup_selects_the_api_and_tests_the_connection(api, tmp_path, monkeypat
     monkeypatch.setattr("synapptic.providers.CONFIG_PATH", tmp_path / "config.yaml")
     choice = list(PROVIDERS).index("anthropic") + 1
 
-    result = CliRunner().invoke(cli, ["config", "provider"], input=f"{choice}\n1\ntest-key\n")
+    result = CliRunner().invoke(cli, ["config", "provider"], input=f"{choice}\n1\ntest-key\n\n")
 
     assert result.exit_code == 0, result.output
     saved = load_config()

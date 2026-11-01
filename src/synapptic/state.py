@@ -17,6 +17,7 @@ from pathlib import Path
 import yaml
 
 from synapptic.config import (
+    BATCHES_DIR,
     SYNAPPTIC_DIR,
     CLAUDE_PROJECTS_DIR,
     CURSORS_DIR,
@@ -276,6 +277,40 @@ def save_cursor(session_id: str, offset: int):
     tmp = path.with_suffix(".json.tmp")
     tmp.write_text(json.dumps({"offset": offset, "updated": datetime.now(timezone.utc).isoformat()}))
     tmp.rename(path)
+
+
+def save_pending_batch(record: dict):
+    """Record a submitted Message Batch: {"batch_id", "submitted", "model", "chunks": {custom_id: chunk}}."""
+    BATCHES_DIR.mkdir(parents=True, exist_ok=True)
+    path = BATCHES_DIR / f"{record['batch_id']}.json"
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(record, indent=2))
+    tmp.rename(path)
+
+
+def load_pending_batches() -> list[dict]:
+    """Every submitted batch not collected yet, oldest first."""
+    if not BATCHES_DIR.exists():
+        return []
+    records = [json.loads(p.read_text()) for p in BATCHES_DIR.glob("msgbatch_*.json")]
+    return sorted(records, key=lambda r: r.get("submitted", ""))
+
+
+def delete_pending_batch(batch_id: str):
+    """Forget a batch once its results are collected."""
+    (BATCHES_DIR / f"{batch_id}.json").unlink(missing_ok=True)
+
+
+def load_retry_chunks() -> list[dict]:
+    """Chunks whose batch result failed; the next submission includes them."""
+    path = BATCHES_DIR / "retry.json"
+    return json.loads(path.read_text()) if path.exists() else []
+
+
+def save_retry_chunks(chunks: list[dict]):
+    """Replace the retry list (empty list = nothing to retry)."""
+    BATCHES_DIR.mkdir(parents=True, exist_ok=True)
+    (BATCHES_DIR / "retry.json").write_text(json.dumps(chunks, indent=2))
 
 
 @contextmanager
