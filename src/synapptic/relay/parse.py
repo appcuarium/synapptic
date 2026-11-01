@@ -272,11 +272,12 @@ def list_all_sessions() -> list[dict]:
     if session_cache["data"] is not None and now - session_cache["timestamp"] < SESSION_CACHE_TTL:
         return session_cache["data"]
     from synapptic.config import CLAUDE_PROJECTS_DIR
-    from synapptic.state import slug_from_project_dir
+    from synapptic.state import include_headless_sessions, is_excluded_transcript, load_config, slug_from_project_dir
 
     if not CLAUDE_PROJECTS_DIR.exists():
         return []
 
+    include_headless = include_headless_sessions(load_config())
     sessions = []
     for project_dir in CLAUDE_PROJECTS_DIR.iterdir():
         if not project_dir.is_dir():
@@ -286,6 +287,8 @@ def list_all_sessions() -> list[dict]:
             session_id = jsonl_file.stem
             stat = jsonl_file.stat()
             if stat.st_size < 100:
+                continue
+            if is_excluded_transcript(jsonl_file, include_headless):
                 continue
 
             # Quick scan: only read first 50 lines to find model + first timestamp

@@ -10,6 +10,7 @@ import json
 import os
 import re
 import shutil
+import tempfile
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -27,6 +28,17 @@ from synapptic.config import (
     PROJECTS_DIR,
     QUEUE_PATH,
 )
+from synapptic.providers import load_config
+
+# Transcripts that are not the user's sessions. A working folder in the temp folder is an agent scratchpad or
+# an agent probe, never a session. A headless run (`claude -p`: synapptic's own calls, scripted agents) is
+# skipped unless the user opts in with config["include_headless_sessions"].
+TEMP_ROOTS = tuple(sorted({
+    "/tmp", "/private/tmp", "/var/folders", "/private/var/folders",
+    tempfile.gettempdir(), os.path.realpath(tempfile.gettempdir()),
+}))
+HEADLESS_ENTRYPOINTS = {"sdk-cli"}
+ORIGIN_SCAN_LINES = 200
 
 # A chunk of a live session is saved as <session>@<byte offset>.json next to whole-session <session>.json files.
 CHUNK_SEPARATOR = "@"
@@ -447,11 +459,54 @@ def slug_from_project_dir(project_dir_name: str) -> str:
     return last[:40] or "unknown"
 
 
-def find_session_transcripts() -> dict[str, tuple[Path, str]]:
-    """Find all session JSONL files across all Claude Code projects.
+def transcript_origin(path: Path) -> tuple[str, str]:
+    """(working folder, entrypoint) of a transcript, from the first record that carries them; ("", "") if none
+    does within the first ORIGIN_SCAN_LINES lines or the file cannot be read."""
+    try:
+        with open(path) as f:
+            for index, line in enumerate(f):
+                if index >= ORIGIN_SCAN_LINES:
+                    break
+                if '"cwd"' not in line:
+                    continue
+                try:
+                    record = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(record, dict) and record.get("cwd"):
+                    return str(record["cwd"]), str(record.get("entrypoint") or "")
+    except OSError:
+        return "", ""
+    return "", ""
 
+
+def is_temp_folder(folder: str) -> bool:
+    """True if the folder is the temp folder or inside it."""
+    return any(folder == root or folder.startswith(root.rstrip("/") + "/") for root in TEMP_ROOTS)
+
+
+def include_headless_sessions(config: dict) -> bool:
+    """The user's opt-in to treat headless (`claude -p`) runs as sessions; off when never set."""
+    return bool(config.get("include_headless_sessions", False))
+
+
+def is_excluded_transcript(path: Path, include_headless: bool) -> bool:
+    """True if this transcript is not one of the user's sessions (see TEMP_ROOTS / HEADLESS_ENTRYPOINTS)."""
+    folder, entrypoint = transcript_origin(path)
+    if folder and is_temp_folder(folder):
+        return True
+    return entrypoint in HEADLESS_ENTRYPOINTS and not include_headless
+
+
+def find_session_transcripts(include_headless: bool | None = None) -> dict[str, tuple[Path, str]]:
+    """Find the user's session JSONL files across all Claude Code projects.
+
+    Agent scratchpads and other runs in the temp folder are left out; so are headless runs unless
+    include_headless is True (None: read the user's config["include_headless_sessions"]).
     Returns dict mapping session_uuid -> (path, project_slug).
     """
+    if include_headless is None:
+        include_headless = include_headless_sessions(load_config())
     transcripts = {}
     if not CLAUDE_PROJECTS_DIR.exists():
         return transcripts
@@ -460,6 +515,8 @@ def find_session_transcripts() -> dict[str, tuple[Path, str]]:
             continue
         slug = slug_from_project_dir(proj.name)
         for jsonl in proj.glob("*.jsonl"):
+            if is_excluded_transcript(jsonl, include_headless):
+                continue
             session_id = jsonl.stem
             transcripts[session_id] = (jsonl, slug)
     return transcripts

@@ -350,6 +350,12 @@ class MetricsStore:
         rows = self._conn.execute("SELECT session_id FROM session_index").fetchall()
         return {r[0] for r in rows}
 
+    def remove_indexed_session(self, session_id: str):
+        """Drop a session from the index and its search entry."""
+        self._conn.execute("DELETE FROM session_index WHERE session_id = ?", (session_id,))
+        self._conn.execute("DELETE FROM session_fts WHERE session_id = ?", (session_id,))
+        self._conn.commit()
+
     def add_ended_session(self, session_id: str):
         """Persist a session as ended so it survives relay restarts."""
         import time

@@ -8,3 +8,4 @@ build/
 .idea/
 .DS_Store
 .claude/settings.local.json
+ui/mockup/
