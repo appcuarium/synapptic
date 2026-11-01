@@ -1,0 +1,80 @@
+name: Release
+
+# Push a version tag (v0.1.0b6) to publish. The dashboard page is compiled here, not committed: the package
+# carries ui/'s build in synapptic/dashboard/static, and the build fails if it does not.
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  tests:
+    uses: ./.github/workflows/tests.yml
+
+  build:
+    needs: tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+
+      - name: Build the dashboard UI
+        run: |
+          npm --prefix ui ci
+          npm --prefix ui run build
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Check the tag matches the package version
+        run: |
+          version=$(python -c "import tomllib; print(tomllib.load(open('pyproject.toml', 'rb'))['project']['version'])")
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "Tag $GITHUB_REF_NAME does not match the version in pyproject.toml ($version)."
+            exit 1
+          fi
+
+      - name: Build the package
+        run: |
+          python -m pip install --upgrade build
+          python -m build
+
+      - name: Check the wheel carries the dashboard page
+        run: |
+          python - <<'EOF'
+          import glob
+          import zipfile
+
+          wheel = glob.glob("dist/*.whl")[0]
+          names = zipfile.ZipFile(wheel).namelist()
+          static = [n for n in names if n.startswith("synapptic/dashboard/static/")]
+          assert "synapptic/dashboard/static/index.html" in names, "the dashboard page is missing from the wheel"
+          assert not any(n.endswith(".map") for n in static), "source maps in the wheel"
+          print(f"{wheel}: {len(static)} dashboard files")
+          EOF
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    # PyPI trusted publishing: no API token stored here. PyPI must list this repository, workflow (release.yml)
+    # and environment (pypi) as a trusted publisher for the synapptic project.
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - uses: pypa/gh-action-pypi-publish@release/v1

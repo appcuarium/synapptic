@@ -5,6 +5,7 @@ on:
     branches: [master, develop, "release/**"]
   pull_request:
     branches: [master, develop]
+  workflow_call:   # the release workflow runs these same tests before it publishes
 
 jobs:
   test:
@@ -24,8 +25,9 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -e ".[dev]" 2>/dev/null || pip install -e .
-          pip install pytest
+          # the dashboard extra (fastapi, uvicorn) for the dashboard tests; httpx for FastAPI's TestClient
+          pip install -e ".[dashboard]"
+          pip install pytest httpx
 
       - name: Run tests
         run: python -m pytest tests/ -v

@@ -16,7 +16,8 @@ export default defineConfig({
   build: {
     outDir: '../src/synapptic/dashboard/static',
     emptyOutDir: true,
-    sourcemap: true,
+    // no source maps in the package (they were most of its 3.8 MB); the dev server has its own
+    sourcemap: false,
   },
   test: {
     environment: 'jsdom',
