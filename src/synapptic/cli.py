@@ -227,7 +227,7 @@ def config_rules(state):
     report = withdraw_rules()
     for path, action in report:
         click.echo(f"  {action}: {path}")
-    kept =[path for path, action in report if action == "kept"]
+    kept = [path for path, action in report if action == "kept"]
     if kept:
         click.echo(f"  {len(kept)} file(s) kept: no synapptic notice, so they may be yours. Remove them by hand if not.")
     click.echo(f"Rules off: the tools no longer get them. Still learning; the rules stay in {RULES_DIR}.")
