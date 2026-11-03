@@ -18,6 +18,8 @@ The result is simple: you stop fighting the model. You stop repeating yourself. 
 
 Every **synapptic** install is personal. No two profiles are alike because no two developers are alike. Your profile reflects your communication style, your expertise, your frustrations, your standards. It's a fingerprint of how you work - built from your actual sessions, not from a template.
 
+And it is yours alone: **synapptic** runs entirely on your computer. Your sessions, your profile and everything learned from them stay on your disk.
+
 ## Get started
 
 ```bash
@@ -28,6 +30,18 @@ synapptic ingest     # analyze your existing sessions
 ```
 
 That's it. From now on, every session ends with **synapptic** quietly learning in the background. The next session starts smarter.
+
+## Your data stays on your computer
+
+**synapptic** has always run on your machine, and that does not change. Your transcripts are read from your disk, your profile is written to your disk, and the only thing that ever leaves your computer is the text you choose to send to the LLM provider you configured, exactly as before. Nothing is sent to synapptic. There is no account, no licence server, no usage reporting, no telemetry of any kind.
+
+### The learning engine: synapptic-core
+
+The learning engine at the heart of **synapptic** ships as **synapptic-core**, a compiled companion package that installs automatically with `pip install synapptic`. It is how we keep the intellectual property behind synapptic secure while keeping synapptic itself free and open source.
+
+For you, nothing changes: the same commands, the same files in `~/.synapptic`, the same results. **synapptic-core** is free to use, prebuilt for macOS, Linux and Windows, and makes no network connections of its own. It filters sessions, prepares what the model is asked, weighs and merges observations, writes the narrative and runs the benchmark, all on your computer, with the data that is already there.
+
+Everything you may want to read, verify or change stays open under the MIT licence in this repository: the command line, every provider integration (so you can see exactly what is sent to your model), the secret scrubbing, the storage, the session browser and dashboard, and the writers for each coding tool.
 
 ## What it builds
 
@@ -126,7 +140,7 @@ Patterns that keep appearing across multiple projects automatically promote to g
 
 ## Custom extraction patterns
 
-**synapptic** ships with a default extraction pattern, but you can create your own - different prompts for different use cases:
+The default extraction pattern ships inside **synapptic-core**, and you can create your own on top of it - different prompts for different use cases:
 
 ```bash
 synapptic patterns list              # see available patterns
@@ -320,7 +334,7 @@ synapptic uninstall                 # clean removal (asks before deleting data)
 ```bash
 synapptic uninstall          # removes skill, hook, settings entry, generated files
                              # asks before deleting your accumulated data
-pip uninstall synapptic
+pip uninstall synapptic synapptic-core
 ```
 
 **synapptic** only touches files it created. Your CLAUDE.md, .cursorrules, and other manually-written config files are never modified.
@@ -331,7 +345,8 @@ You choose where your data goes.
 
 - **100% local option.** Use Ollama or LM Studio and nothing leaves your machine. No API keys, no cloud, no network calls. Your transcripts, profile, and observations stay on your disk.
 - **Cloud option.** If you use Anthropic or OpenAI, filtered conversation text is sent to their API for analysis. Tool output and file contents are stripped by the filter, but your actual messages and the AI's responses are sent. If that's a concern, use a local model.
-- **No telemetry.** **synapptic** has no analytics, no tracking, no phone-home. It talks to the LLM you configure and nothing else.
+- **No telemetry.** **synapptic** and **synapptic-core** have no analytics, no tracking, no phone-home, no licence checks. They talk to the LLM you configure and nothing else.
+- **Nothing is sent to synapptic.** We never see your sessions, your profile, your observations or your usage. Not with the open source part, not with the compiled part, not ever.
 
 ## Processing large session histories
 
@@ -365,7 +380,7 @@ Found a bug or have a suggestion? [Open an issue](https://github.com/appcuarium/
 
 ## Contributing
 
-**synapptic** is open source and contributions are welcome.
+**synapptic** is open source and contributions are welcome. The learning engine, **synapptic-core**, is developed in-house and is not open to code contributions; everything in this repository is, and ideas about the engine are always welcome as issues.
 
 **Ideas that would make a real difference:**
 
@@ -387,8 +402,10 @@ If you're not sure where to start, check the [open issues](https://github.com/ap
 
 - Python 3.10+
 - One LLM provider (Claude CLI, API key, or local model)
-- Two dependencies installed automatically (click, pyyaml)
+- Dependencies installed automatically: click, pyyaml, and **synapptic-core** (prebuilt for macOS, Linux and Windows)
 
 ## License
 
-MIT
+**synapptic** (this repository): MIT, see [LICENSE](LICENSE).
+
+**synapptic-core**: proprietary, free to use with synapptic, distributed as prebuilt packages; its licence ships inside the package. Keeping the engine proprietary is what lets us keep synapptic free.

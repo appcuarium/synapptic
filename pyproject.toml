@@ -19,11 +19,14 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
     "Topic :: Software Development :: Quality Assurance",
 ]
-dependencies = ["click>=8.0", "pyyaml>=6.0", "anthropic>=0.84"]
+# synapptic-core: the compiled learning engine (proprietary, binaries on PyPI); synapptic.core checks >=0.1,<0.2.
+# anyio>=4.14.2: PYSEC-2026-4024 / 4025 (audit 2026-11-03)
+dependencies = ["click>=8.0", "pyyaml>=6.0", "anthropic>=0.84", "anyio>=4.14.2", "synapptic-core>=0.1,<0.2"]
 
 [project.optional-dependencies]
-# uvicorn[standard] brings a websocket library: the dashboard talks to the browser over a websocket
-dashboard = ["fastapi>=0.100", "uvicorn[standard]>=0.20"]
+# uvicorn[standard] brings a websocket library: the dashboard talks to the browser over a websocket.
+# starlette>=1.3.1: PYSEC-2026-161 / 248 / 249 / 2280 / 2281 (audit 2026-11-03); fastapi allows it.
+dashboard = ["fastapi>=0.100", "starlette>=1.3.1", "uvicorn[standard]>=0.20"]
 
 [project.urls]
 Homepage = "https://github.com/appcuarium/synapptic"

@@ -3,8 +3,8 @@ become proposals for the words that rule should have known; the user approves or
 approved proposal is written into the rules file.
 
 Off unless config.yaml names the rules file (`harness: {rules: <path>}`). The loop's logic lives in the
-`synapptic-harness` package (a compiled extension, installed separately); this module is the plumbing
-around it: configuration, the rules files, the proposal store, the model call, session lookup.
+`synapptic-core` package (compiled, installed separately); this module is the plumbing around it:
+configuration, the rules files, the proposal store, the model call, session lookup.
 """
 
 import hashlib
@@ -17,21 +17,16 @@ from pathlib import Path
 import yaml
 
 from synapptic.config import CLAUDE_PROJECTS_DIR, SYNAPPTIC_DIR
+from synapptic.core import CoreMissing, require_core as load_core
 from synapptic.extract import extract_json
 from synapptic.integrate import resolve_project_root
 from synapptic.providers import call_llm, load_config
 from synapptic.state import find_session_transcripts
 
-try:
-    import synapptic_harness as core
-except ImportError:
-    core = None
-
 HARNESS_DIR = SYNAPPTIC_DIR / "harness"
 PROPOSALS_PATH = HARNESS_DIR / "proposals.yaml"
 OPERATOR_ENTRYPOINT = "cli"
 PROMPT_EXCERPT = 240
-NOT_INSTALLED = "the synapptic-harness package is not installed; the harness loop needs it"
 
 
 class HarnessError(Exception):
@@ -39,9 +34,11 @@ class HarnessError(Exception):
 
 
 def require_core():
-    if core is None:
-        raise HarnessError(NOT_INSTALLED)
-    return core
+    """The core, or a HarnessError the CLI shows (one message for every module: synapptic.core's)."""
+    try:
+        return load_core()
+    except CoreMissing as exc:
+        raise HarnessError(str(exc)) from exc
 
 
 # ----- rules -----------------------------------------------------------------------------------------
@@ -111,6 +108,7 @@ def llm_candidates(miss: dict, rule: dict, config: dict) -> list[dict]:
 def propose(miss: dict, rule: dict, corpus: list[str], config: dict, rejected: set[str]) -> list[dict]:
     """The candidates for one miss that pass the gate, each with its noise count over `corpus`."""
     kept = []
+    core = require_core()
     current = (rule.get("pre") or {}).get("prompt", "")
     for candidate in llm_candidates(miss, rule, config):
         if core.accepted(candidate["phrase"], candidate["regex"], miss["prompt"], current, sorted(rejected)):
@@ -121,7 +119,7 @@ def propose(miss: dict, rule: dict, corpus: list[str], config: dict, rejected: s
 # ----- store -----------------------------------------------------------------------------------------
 
 def proposal_id(rule_id: str, regex: str) -> str:
-    return hashlib.sha1(f"{rule_id}\n{regex}".encode()).hexdigest()[:8]
+    return hashlib.sha1(f"{rule_id}\n{regex}".encode(), usedforsecurity=False).hexdigest()[:8]
 
 
 def load_proposals() -> dict[str, dict]:

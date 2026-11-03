@@ -1,28 +1,16 @@
-"""Transcript pre-filter — pure Python, no LLM.
+"""Transcript pre-filter: what of a session the model gets to see.
 
-Stream-parses session JSONL files, extracting only preference-relevant content.
-Reduces 100MB+ transcripts to ~50K tokens of signal.
+The selection and the budget rules live in the synapptic-core package; this module reads the JSONL, hands
+records over, and gives the turns back as `Turn` objects.
 """
 
 import json
-import re
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass
 from pathlib import Path
 
-from synapptic.config import (
-    CHARS_PER_TOKEN,
-    CORRECTION_SIGNALS,
-    DEFAULT_MAX_TOKENS,
-    PREFERENCE_SIGNALS,
-    STRONG_REACTION_SIGNALS,
-)
-
-# Short-reply heuristic: a terse user message after a long assistant response
-# is likely a correction or rejection. Typical corrections are 20-50 chars
-# ("no, do X instead"). 60 chars catches multi-word corrections while
-# filtering out longer confirmations ("ok that looks good, also do Y").
-CORRECTION_MAX_USER_CHARS = 60
-CORRECTION_MIN_ASSISTANT_CHARS = 500
+from synapptic.config import CHARS_PER_TOKEN, DEFAULT_MAX_TOKENS
+from synapptic.core import require_core
+from synapptic.scrub import scrub_text
 
 
 @dataclass
@@ -59,237 +47,30 @@ def iter_records(jsonl_path: Path, start: int = 0, end: int | None = None):
 
 def conversation_turn(record: dict) -> Turn | None:
     """The user or assistant text a record carries, or None for every other record."""
-    record_type = record.get("type")
-    if record_type == "user":
-        return extract_user_turn(record)
-    if record_type == "assistant":
-        return extract_assistant_turn(record)
-    return None
+    turn = require_core().conversation_turn(json.dumps(record))
+    return Turn(**turn) if turn else None
 
 
 def filter_transcript(jsonl_path: Path, max_tokens: int = DEFAULT_MAX_TOKENS,
                       start: int = 0, end: int | None = None) -> list[Turn]:
-    """Stream-parse a session JSONL, extract only preference-relevant content.
-
-    Keeps:
-    - User messages where content is a string (not tool_result arrays)
-    - Assistant text blocks only (strips tool_use, thinking blocks)
-    - Chronological pairs: [what Claude said] → [what user said next]
-
-    Strips:
-    - progress records (~40-50% of lines)
-    - file-history-snapshot records
-    - system records
-    - queue-operation records
-    - last-prompt records
-    - tool_result content blocks (from user messages)
-    - tool_use input blocks (the actual file contents, command outputs)
-    - thinking blocks from assistant messages
-
-    start/end limit the read to a byte range of the file (a chunk of a long session).
-    """
-    turns = []
-    max_chars = max_tokens * CHARS_PER_TOKEN
-
-    for _, record in iter_records(jsonl_path, start, end):
-        turn = conversation_turn(record)
-        if turn:
-            turns.append(turn)
-
-    # Apply heuristic boosting
-    apply_boosts(turns)
-
-    # Truncate to max_tokens if needed
-    turns = truncate_to_budget(turns, max_chars)
-
-    return turns
+    """The conversation turns of a session's byte range [start, end), boosted and cut to the token budget."""
+    return [Turn(**turn) for turn in require_core().filter_transcript(str(jsonl_path), max_tokens, start, end)]
 
 
-def extract_user_turn(record: dict) -> Turn | None:
-    """Extract user text from a user record."""
-    message = record.get("message", {})
-    content = message.get("content", "")
-    timestamp = record.get("timestamp", "")
-
-    # String content = direct user message
-    if isinstance(content, str):
-        text = content.strip()
-        if text:
-            return Turn(role="user", text=text, timestamp=timestamp)
-
-    # List content = could be tool_result or mixed
-    elif isinstance(content, list):
-        text_parts = []
-        for block in content:
-            if isinstance(block, dict):
-                # Only keep text blocks, skip tool_result
-                if block.get("type") == "text":
-                    t = block.get("text", "").strip()
-                    if t:
-                        text_parts.append(t)
-            elif isinstance(block, str):
-                text_parts.append(block)
-        if text_parts:
-            return Turn(role="user", text="\n".join(text_parts), timestamp=timestamp)
-
-    return None
-
-
-def extract_assistant_turn(record: dict) -> Turn | None:
-    """Extract assistant text from an assistant record, stripping tool_use and thinking."""
-    message = record.get("message", {})
-    content = message.get("content", [])
-    timestamp = record.get("timestamp", "")
-
-    if isinstance(content, str):
-        text = content.strip()
-        if text:
-            return Turn(role="assistant", text=text, timestamp=timestamp)
-
-    elif isinstance(content, list):
-        text_parts = []
-        for block in content:
-            if not isinstance(block, dict):
-                continue
-            # Only keep text blocks
-            if block.get("type") == "text":
-                t = block.get("text", "").strip()
-                if t:
-                    text_parts.append(t)
-            # Skip tool_use, thinking, tool_result
-        if text_parts:
-            return Turn(role="assistant", text="\n".join(text_parts), timestamp=timestamp)
-
-    return None
-
-
-def apply_boosts(turns: list[Turn]):
-    """Mark turns that contain correction/preference signals as boosted."""
-    for i, turn in enumerate(turns):
-        if turn.role != "user":
-            continue
-
-        text_lower = turn.text.lower()
-
-        # Check correction signals
-        for signal in CORRECTION_SIGNALS:
-            if signal.lower() in text_lower:
-                turn.boosted = True
-                turn.boost_reason = f"correction: '{signal}'"
-                break
-
-        if turn.boosted:
-            continue
-
-        # Check preference signals
-        for signal in PREFERENCE_SIGNALS:
-            if signal.lower() in text_lower:
-                turn.boosted = True
-                turn.boost_reason = f"preference: '{signal}'"
-                break
-
-        if turn.boosted:
-            continue
-
-        # Check strong reactions
-        for signal in STRONG_REACTION_SIGNALS:
-            if signal in turn.text:  # case-sensitive for caps
-                turn.boosted = True
-                turn.boost_reason = f"reaction: '{signal}'"
-                break
-
-        if turn.boosted:
-            continue
-
-        # Short user message after long assistant message = likely correction
-        if (i > 0 and turns[i - 1].role == "assistant"
-                and len(turn.text) < CORRECTION_MAX_USER_CHARS
-                and len(turns[i - 1].text) > CORRECTION_MIN_ASSISTANT_CHARS):
-            turn.boosted = True
-            turn.boost_reason = "short reply after long response"
-
-
-def _truncate_turn(turn: Turn, share: int):
-    """Cut a turn's text to `share` chars, preferring a sentence end, marked with '...'."""
-    if len(turn.text) > share:
-        cut_point = share - 3
-        for end_char in ('.', '!', '?'):
-            last_end = turn.text.rfind(end_char, int(cut_point * 0.8), cut_point + 1)
-            if last_end != -1:
-                cut_point = last_end + 1
-                break
-        turn.text = turn.text[:cut_point] + "..."
+def apply_boosts(turns: list[Turn]) -> None:
+    """Mark, in place, the turns that carry correction, preference or reaction signals."""
+    for turn, marked in zip(turns, require_core().apply_boosts([asdict(turn) for turn in turns])):
+        turn.boosted = marked["boosted"]
+        turn.boost_reason = marked["boost_reason"]
 
 
 def truncate_to_budget(turns: list[Turn], max_chars: int) -> list[Turn]:
-    """Truncate turns to fit within character budget.
-
-    Strategy:
-    1. If total fits, return all
-    2. Otherwise, keep all boosted turns + their preceding assistant turn
-    3. Fill remaining budget with non-boosted turns from the end (recent = more relevant)
-    """
-    total_chars = sum(len(t.text) for t in turns)
-    if total_chars <= max_chars:
-        return turns
-
-    # Phase 1: collect boosted turns with context
-    priority_indices = set()
-    for i, turn in enumerate(turns):
-        if turn.boosted:
-            priority_indices.add(i)
-            # Include preceding assistant turn for context
-            if i > 0 and turns[i - 1].role == "assistant":
-                priority_indices.add(i - 1)
-
-    priority_turns = [(i, turns[i]) for i in sorted(priority_indices)]
-    priority_chars = sum(len(t.text) for _, t in priority_turns)
-
-    # If priority turns alone exceed budget, allocate proportionally then truncate
-    if priority_chars > max_chars:
-        user_chars = sum(len(t.text) for _, t in priority_turns if t.role == "user")
-        if user_chars <= max_chars:
-            # The user's own words are the signal: keep them whole, trim only the assistant context
-            assistant_chars = priority_chars - user_chars
-            for _, turn in priority_turns:
-                if turn.role != "user":
-                    _truncate_turn(turn, max(4, int((max_chars - user_chars) * len(turn.text) / assistant_chars)))
-            return [turn for _, turn in priority_turns]
-        result = []
-        for _, turn in priority_turns:
-            # Each turn gets a share of budget proportional to its size
-            _truncate_turn(turn, max(4, int(max_chars * len(turn.text) / priority_chars)))
-            result.append(turn)
-        return result
-
-    # Phase 2: fill remaining budget with recent non-boosted turns
-    remaining_budget = max_chars - priority_chars
-    result_indices = set(priority_indices)
-    filler = []
-
-    for i in range(len(turns) - 1, -1, -1):
-        if i in result_indices:
-            continue
-        if remaining_budget <= 0:
-            break
-        turn = turns[i]
-        if len(turn.text) <= remaining_budget:
-            filler.append(i)
-            remaining_budget -= len(turn.text)
-
-    result_indices.update(filler)
-
-    return [turns[i] for i in sorted(result_indices)]
+    """The turns that fit the character budget, the important ones first."""
+    return [Turn(**turn) for turn in require_core().truncate_to_budget([asdict(turn) for turn in turns], max_chars)]
 
 
 def turns_to_text(turns: list[Turn], scrub: bool = True) -> str:
-    """Convert filtered turns into a text document for LLM consumption.
-
-    Applies sensitive data scrubbing by default before the text is sent
-    to the extraction LLM. Disable with scrub=False for debugging.
-    """
-    from synapptic.scrub import scrub_text
-
+    """The turns as the text document the model reads, secrets scrubbed unless scrub=False (debugging)."""
     parts = []
     for turn in turns:
         prefix = "USER" if turn.role == "user" else "ASSISTANT"

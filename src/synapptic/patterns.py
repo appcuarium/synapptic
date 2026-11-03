@@ -14,7 +14,8 @@ Patterns are searched in order:
     1. ~/.synapptic/patterns/<name>/prompt.md   (user-created)
     2. Built-in patterns shipped with the package
 
-Users create custom patterns with: synapptic patterns create <name>
+The default pattern is built into the synapptic-core package: it is used whenever no user pattern of that
+name exists, and it cannot be shown. Users create custom patterns with: synapptic patterns create <name>
 """
 
 from pathlib import Path
@@ -56,7 +57,7 @@ Respond with ONLY a JSON array:
 
 def list_patterns() -> list[dict]:
     """List all available patterns with their source."""
-    found = {}
+    found = {"default": {"name": "default", "source": "built-in", "path": None}}
 
     # Built-in (lowest priority — user patterns override)
     builtin = builtin_patterns_dir()

@@ -12,6 +12,7 @@ import yaml
 
 from synapptic import harness, providers
 from synapptic.config import CHECKPOINT_MIN_TOKENS, SYNAPPTIC_DIR, SYNTHESIZE_MIN_HOURS
+from synapptic.core import core_info
 from synapptic.integrate import RULES_DIR, integrate_archetypes, rules_enabled, withdraw_rules
 from synapptic.pipeline import (
     checkpoint_session,
@@ -74,6 +75,13 @@ def config_show():
     api_key = config.get("api_key", "")
     api_url = config.get("api_url", "")
 
+    core = core_info()
+    if core["installed"] and core["sha256"]:
+        click.echo(f"Core:            synapptic-core {core['version']} (sha256 {core['sha256']})")
+    elif core["installed"]:
+        click.echo(f"Core:            synapptic-core {core['version']}")
+    else:
+        click.echo("Core:            synapptic-core not installed (pip install synapptic-core); synapptic cannot learn without it")
     click.echo(f"Provider:        {provider_name} ({provider})")
     click.echo(f"Model:           {model}")
     click.echo(f"Profiling mode:  {mode}")
@@ -419,6 +427,10 @@ def patterns_show(name):
     from synapptic.patterns import load_pattern
 
     content = load_pattern(name)
+    if not content and name == "default":
+        click.echo("The default pattern is built into synapptic-core and cannot be shown. "
+                   "Start your own with: synapptic patterns create <name>")
+        return
     if not content:
         click.echo(f"Pattern '{name}' not found.")
         return
@@ -443,7 +455,7 @@ def patterns_use(name):
     from synapptic.patterns import load_pattern
     from synapptic.providers import load_config, save_config
 
-    if not load_pattern(name):
+    if name != "default" and not load_pattern(name):
         click.echo(f"Pattern '{name}' not found. Run 'synapptic patterns list' to see available.")
         return
 

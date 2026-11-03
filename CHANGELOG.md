@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### The learning core is now synapptic-core
+
+- **What learns moved into `synapptic-core`**, a compiled package installed as a dependency (proprietary, free to use, binaries only): the transcript filter, the extraction prompt and parser, the profile merge, decay and promotion, the narrative synthesis, the harness loop. The modules of the same names in this package are the plumbing around it and keep their functions and signatures. Without the core installed, the commands that learn say so: `the synapptic-core package is not installed`.
+- **The default extraction pattern is built into the core** and can no longer be shown (`synapptic patterns show default` says so); `synapptic patterns create <name>` starts from a plain template. User patterns in `~/.synapptic/patterns/` work as before.
+- **`synapptic.config` lost the tuning constants** (decay factor, thresholds, dimension routing sets, the filter signal lists, the dimension descriptions); `DIMENSIONS` stays.
+- **`synapptic harness`**: `mine -s <session> | --all` finds the refusals a coding-agent harness gave without having shown its context first and proposes the missing words; `proposals`, `approve <id>`, `reject <id>`. Off unless `config.yaml` names the rules file (`harness: {rules: <path>}`).
+
 ### Removed: the relay
 
 - **`synapptic relay` and `synapptic run` are gone**, with the proxy behind them (the `/v1` routes, the old `/dashboard/` and `/browser/` pages). Session stats come from the transcripts, which cover every session without routing traffic through a local proxy.
