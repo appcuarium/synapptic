@@ -1489,6 +1489,7 @@ HOOK_REGISTRATIONS = (
 HARNESS_HOOKS = (
     ("UserPromptSubmit", "*", "pre"),
     ("PreToolUse", "Bash", "guard"),
+    ("PreToolUse", "Edit|Write|MultiEdit", "guard"),
     ("PostToolUse", "Bash|Edit|Write|MultiEdit", "pre"),
     ("PostToolUse", "Edit|Write|MultiEdit", "guard"),
     ("Stop", "*", "guard"),
