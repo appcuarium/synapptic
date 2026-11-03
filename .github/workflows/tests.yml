@@ -31,3 +31,24 @@ jobs:
 
       - name: Run tests
         run: python -m pytest tests/ -v
+
+  # Known vulnerabilities in what a user installs (the package, its dependencies, the dashboard extra).
+  # Runs on every push and PR, and before a release through workflow_call. A finding without a fix yet
+  # is excluded explicitly with --ignore-vuln <id> here, never by dropping the step.
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install the package as a user would
+        run: |
+          python -m pip install --upgrade pip setuptools
+          pip install ".[dashboard]"
+      # pip-audit runs from its own environment (pipx) so its dependencies are not what gets audited;
+      # the list is exactly what pip installed, without re-resolving it.
+      - name: pip-audit
+        run: |
+          pip freeze --exclude synapptic > installed.txt
+          pipx run pip-audit --strict --no-deps --desc on -r installed.txt
