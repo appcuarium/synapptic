@@ -7,23 +7,18 @@ separately); this module is the plumbing around it: the proposal store, the mode
 It never reads a rule's contents, only its id.
 """
 
-import hashlib
 import json
 import os
 import time
 from pathlib import Path
 
-import yaml
-
-from synapptic.config import CLAUDE_PROJECTS_DIR, SYNAPPTIC_DIR
+from synapptic.config import CLAUDE_PROJECTS_DIR
 from synapptic.core import CoreMissing, require_core as load_core
 from synapptic.extract import extract_json
 from synapptic.integrate import resolve_project_root
 from synapptic.providers import call_llm, load_config
 from synapptic.state import find_session_transcripts
 
-HARNESS_DIR = SYNAPPTIC_DIR / "harness"
-PROPOSALS_PATH = HARNESS_DIR / "proposals.yaml"
 PROMPT_EXCERPT = 240
 
 
@@ -88,24 +83,21 @@ def propose(miss: dict, corpus: list[str], config: dict, rejected: set[str]) -> 
 
 
 # ----- store -----------------------------------------------------------------------------------------
+# Proposals live in the harness store (the core), where the hooks read the pending ones in shadow.
 
 def proposal_id(rule_id: str, regex: str) -> str:
-    return hashlib.sha1(f"{rule_id}\n{regex}".encode(), usedforsecurity=False).hexdigest()[:8]
+    return require_core().harness_proposal_key(rule_id, regex)
 
 
 def load_proposals() -> dict[str, dict]:
-    try:
-        data = yaml.safe_load(PROPOSALS_PATH.read_text()) or {}
-    except OSError:
-        return {}
-    return data if isinstance(data, dict) else {}
+    """Every proposal, keyed, in stored order."""
+    return {proposal["key"]: proposal for proposal in require_core().harness_proposals()}
 
 
 def save_proposals(proposals: dict[str, dict]) -> None:
-    PROPOSALS_PATH.parent.mkdir(parents=True, exist_ok=True)
-    temp = PROPOSALS_PATH.with_suffix(f".{os.getpid()}.tmp")
-    temp.write_text(yaml.safe_dump(proposals, sort_keys=False, allow_unicode=True))
-    os.replace(temp, PROPOSALS_PATH)
+    core = require_core()
+    for key, proposal in proposals.items():
+        core.harness_upsert_proposal(json.dumps({**proposal, "key": key}))
 
 
 def rejected_regexes(proposals: dict[str, dict], rule_id: str) -> set[str]:
@@ -116,7 +108,7 @@ def record_proposal(proposals: dict[str, dict], miss: dict, candidate: dict) -> 
     """Add the miss as a receipt of the proposal for (rule, regex), creating the proposal on its first receipt."""
     key = proposal_id(miss["rule_id"], candidate["regex"])
     proposal = proposals.setdefault(key, {
-        "kind": "vocabulary", "status": "pending", "rule_id": miss["rule_id"],
+        "key": key, "kind": "vocabulary", "status": "pending", "rule_id": miss["rule_id"],
         "phrase": candidate["phrase"], "regex": candidate["regex"], "created": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
         "receipts": []})
     proposal["matches"] = candidate["matches"]
