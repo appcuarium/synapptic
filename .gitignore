@@ -11,6 +11,7 @@ build/
 ui/mockup/
 # Private working notes and tests, one folder per implementation (local paths, real data); never published
 docs/private/
+tests/private/
 ui/node_modules/
 ui/*.tsbuildinfo
 # Vite build output (built in the release step; decision pending: commit it or build at release)

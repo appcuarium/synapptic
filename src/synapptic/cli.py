@@ -10,7 +10,7 @@ from pathlib import Path
 import click
 import yaml
 
-from synapptic import providers
+from synapptic import harness, providers
 from synapptic.config import CHECKPOINT_MIN_TOKENS, SYNAPPTIC_DIR, SYNTHESIZE_MIN_HOURS
 from synapptic.integrate import RULES_DIR, integrate_archetypes, rules_enabled, withdraw_rules
 from synapptic.pipeline import (
@@ -1007,6 +1007,87 @@ def results_compare(provider1, model1, provider2, model2, project):
         click.echo(f"\n  Winner: {provider2}/{model2}")
     else:
         click.echo(f"\n  Result: Tie")
+
+
+@cli.group("harness")
+def harness_group():
+    """Learn the harness's vocabulary from its misses: mine refusals, review proposals, approve into the rules."""
+    pass
+
+
+@harness_group.command("mine")
+@click.option("--session", "-s", "sessions", multiple=True, help="A session id or transcript path (repeatable)")
+@click.option("--all", "everything", is_flag=True, help="Every one of your own sessions")
+def harness_mine(sessions, everything):
+    """Find family refusals that got no card first, and propose the missing words."""
+    if not sessions and not everything:
+        raise click.UsageError("name a session with -s, or pass --all")
+    try:
+        transcripts = [harness.resolve_session(name) for name in sessions]
+        if everything:
+            transcripts.extend(harness.operator_transcripts())
+        results = harness.mine(transcripts)
+    except harness.HarnessError as exc:
+        raise click.ClickException(str(exc))
+    for entry in results:
+        miss = entry["miss"]
+        click.echo(f"  {miss['session'][:8]}  {miss['rule_id']}  refused {miss['timestamp'][:19]}, no card this turn")
+        click.echo(f"    prompt: {miss['prompt'][:PROMPT_SHOWN]!r}")
+        if not entry["rule"]:
+            click.echo("    rule not found in the rules file(s); no proposal")
+        elif not entry["proposals"]:
+            click.echo("    no describing phrase in the prompt; no proposal")
+        for proposal in entry["proposals"]:
+            click.echo(f"    proposal {proposal_key(proposal)}  {proposal['phrase']!r}  /{proposal['regex']}/  "
+                       f"matches {proposal['matches']} of {proposal['corpus']} prior prompts  "
+                       f"({len(proposal['receipts'])} receipt(s), {proposal['status']})")
+    if not results:
+        click.echo("No misses.")
+    else:
+        click.echo(f"{len(results)} miss(es). Review with `synapptic harness proposals`.")
+
+
+@harness_group.command("proposals")
+def harness_proposals():
+    """List the proposals and their state."""
+    proposals = harness.load_proposals()
+    if not proposals:
+        click.echo("No proposals.")
+        return
+    for key, proposal in proposals.items():
+        click.echo(f"  {key}  [{proposal['status']:8}]  {proposal['rule_id']}  {proposal['phrase']!r} -> /{proposal['regex']}/  "
+                   f"{len(proposal['receipts'])} receipt(s), matches {proposal.get('matches', '?')} of {proposal.get('corpus', '?')}")
+        for receipt in proposal["receipts"]:
+            click.echo(f"      {receipt['session'][:8]} {receipt['timestamp'][:19]}  {receipt['prompt_excerpt'][:PROMPT_SHOWN]!r}")
+
+
+@harness_group.command("approve")
+@click.argument("key")
+def harness_approve(key):
+    """Write the proposal's words into its rule's pre.prompt."""
+    try:
+        proposal = harness.approve(key)
+    except harness.HarnessError as exc:
+        raise click.ClickException(str(exc))
+    click.echo(f"Approved {key}: {proposal['rule_id']} pre.prompt is now /{proposal['written']}/ in {proposal['rules_file']}")
+
+
+@harness_group.command("reject")
+@click.argument("key")
+def harness_reject(key):
+    """Reject the proposal; the same words are not proposed again for that rule."""
+    try:
+        proposal = harness.reject(key)
+    except harness.HarnessError as exc:
+        raise click.ClickException(str(exc))
+    click.echo(f"Rejected {key}: {proposal['rule_id']} /{proposal['regex']}/")
+
+
+def proposal_key(proposal: dict) -> str:
+    return harness.proposal_id(proposal["rule_id"], proposal["regex"])
+
+
+PROMPT_SHOWN = 110
 
 
 @cli.group("guards")
