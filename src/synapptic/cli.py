@@ -1113,6 +1113,26 @@ def harness_rules(as_json):
     click.echo(text.rstrip("\n") or "No rules in the harness store.")
 
 
+@harness_group.command("stats")
+@click.option("--days", default=14, show_default=True, help="The window, in days")
+def harness_stats(days):
+    """How the rules behaved: fires, idle fires, misses and cost per rule and per word, over a window."""
+    try:
+        found = harness.stats(days)
+    except (harness.HarnessError, ValueError) as exc:
+        raise click.ClickException(str(exc))
+    click.echo(f"Last {found['days']} day(s): {found['events']} injection(s) across {found['transcripts']} session(s)")
+    if not found["rules"]:
+        click.echo("No rule fired in the window.")
+        return
+    for rule in found["rules"]:
+        idle = f", {rule['idle']} idle" if rule["family"] else ""
+        misses = f", {rule['misses']} miss(es)" if rule["family"] else ""
+        click.echo(f"  {rule['id']}: {rule['fires']} fire(s){idle}{misses}, {rule['chars']:,} chars, {rule['sessions']} session(s)")
+        for word in rule["words"]:
+            click.echo(f"      /{word['pattern']}/  {word['fires']} fire(s), {word['idle']} idle")
+
+
 def proposal_key(proposal: dict) -> str:
     return harness.proposal_id(proposal["rule_id"], proposal["regex"])
 

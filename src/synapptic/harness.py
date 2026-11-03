@@ -185,6 +185,13 @@ def corpus_prompts(rule_id: str, transcripts: list[Path]) -> list[str]:
     return list(require_core().harness_corpus_prompts(rule_id, pairs))
 
 
+def stats(days: int = 14, transcripts: list[Path] | None = None) -> dict:
+    """The tuner's numbers over the last `days`: per rule fires, idle fires, misses, characters, sessions,
+    and per word of its vocabulary, from the store's events joined with the user's own sessions."""
+    paths = transcripts if transcripts is not None else operator_transcripts()
+    return require_core().harness_stats(days, [str(path) for path in paths])
+
+
 def mine(transcripts: list[Path], config: dict | None = None, corpus_transcripts: list[Path] | None = None) -> list[dict]:
     """Mine the transcripts, propose for each miss, record the proposals. Returns one entry per miss:
     {miss, rule (whether the store knows it), proposals: [proposal dicts]}."""
