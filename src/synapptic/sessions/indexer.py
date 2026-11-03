@@ -5,20 +5,15 @@ Called by:
 - Session-end hook for incremental indexing of a single session
 """
 
-import json
 import sys
 from pathlib import Path
 
 from synapptic.config import CLAUDE_PROJECTS_DIR
 from synapptic.providers import load_config
-from synapptic.sessions.parse import count_conversation_turns, parse_session_full
+from synapptic.sessions.parse import count_conversation_turns
 from synapptic.sessions.store import DB_PATH, SessionStore
+from synapptic.sessions.tail import TranscriptTail
 from synapptic.state import include_headless_sessions, is_excluded_transcript, slug_from_project_dir
-
-# Lines worth parsing: conversation turns and the two title records (with or without a space after the colon).
-TITLE_AND_TURN_MARKERS = tuple(
-    f'"type":{space}"{kind}"' for kind in ("user", "assistant", "custom-title", "ai-title") for space in ("", " ")
-)
 
 
 def index_all_sessions(incremental: bool = True, verbose: bool = False) -> int:
@@ -115,81 +110,27 @@ def index_single_session(session_id: str, jsonl_path: Path) -> bool:
     return True
 
 
-def extract_session_metadata(jsonl_path: Path) -> dict | None:
-    """Extract title, model, timestamps, message count from a session JSONL.
-
-    Reads the first 100 conversation lines for metadata, then counts the rest quickly.
-    """
-    model = None
-    first_ts = None
-    last_ts = None
-    msg_count = 0
-    first_user_message = ""
-    custom_title = ""   # the name the user gave the session ({"type":"custom-title","customTitle":...})
-    ai_title = ""       # Claude Code's generated title ({"type":"ai-title","aiTitle":...})
-
-    try:
-        with open(jsonl_path) as f:
-            for line in f:
-                # Fast pre-filter
-                if not any(marker in line for marker in TITLE_AND_TURN_MARKERS):
-                    continue
-                try:
-                    record = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-
-                rtype = record.get("type")
-
-                # The latest of each kind wins: a session can be renamed and retitled as it goes.
-                if rtype == "custom-title":
-                    custom_title = record.get("customTitle") or record.get("title") or custom_title
-                    continue
-                if rtype == "ai-title":
-                    ai_title = record.get("aiTitle") or ai_title
-                    continue
-
-                if rtype not in ("user", "assistant"):
-                    continue
-
-                msg_count += 1
-                ts = record.get("timestamp", "")
-                if ts and not first_ts:
-                    first_ts = ts
-                if ts:
-                    last_ts = ts
-
-                if rtype == "user" and not first_user_message:
-                    content = record.get("message", {}).get("content", "")
-                    if isinstance(content, str):
-                        first_user_message = content[:500]
-                    elif isinstance(content, list):
-                        for block in content:
-                            if isinstance(block, dict) and block.get("type") == "text":
-                                first_user_message = block.get("text", "")[:500]
-                                break
-
-                if rtype == "assistant" and not model:
-                    model = record.get("message", {}).get("model")
-
-    except Exception:
-        return None
-
-    if msg_count == 0:
-        return None
-
-    # The user's name for the session, else Claude Code's title, else the start of the first message
-    title = custom_title or ai_title
-    if not title and first_user_message:
-        title = first_user_message[:120].split("\n")[0]
-
+def tail_metadata(tail: TranscriptTail) -> dict:
+    """The index fields of a transcript read so far (the dashboard refreshes live sessions with this too)."""
     return {
-        "title": title,
-        "model": model or "unknown",
-        "first_timestamp": first_ts or "",
-        "last_timestamp": last_ts or "",
-        "message_count": msg_count,
-        # a second pass, unscrubbed (only counted): the turns as the conversation shows them
-        "turn_count": count_conversation_turns(parse_session_full(jsonl_path, scrub=False)),
-        "first_user_message": first_user_message,
+        "title": tail.title,
+        "model": tail.model or "unknown",
+        "first_timestamp": tail.first_timestamp,
+        "last_timestamp": tail.last_timestamp,
+        "message_count": tail.message_count,
+        "turn_count": count_conversation_turns(tail.turns),
+        "first_user_message": tail.first_user_message,
     }
+
+
+def extract_session_metadata(jsonl_path: Path) -> dict | None:
+    """Title, model, timestamps, message and turn counts of a session JSONL, in one pass (sessions.tail).
+    None if the file cannot be read or holds no user or assistant record."""
+    tail = TranscriptTail(jsonl_path, scrub=False)   # only counted, never shown: no scrubbing
+    try:
+        tail.update()
+    except (OSError, UnicodeError):
+        return None
+    if tail.message_count == 0:
+        return None
+    return tail_metadata(tail)

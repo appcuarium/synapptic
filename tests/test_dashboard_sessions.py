@@ -2,6 +2,7 @@
 
 import json
 import os
+import sqlite3
 import time
 
 import pytest
@@ -137,6 +138,50 @@ def test_a_session_the_end_hook_closed_is_not_live(client, projects_dir):
         ws.receive_json()
         sessions = {s["session_id"]: s for s in request(ws, "l2", "sessions.list")["result"]}
     assert sessions["dc88c6b4"]["live"] is False and sessions["7e57f00d"]["live"] is True
+
+
+def stale_row(session_id, counted_at):
+    """Make the index row of a live session look counted before its transcript grew."""
+    db = sqlite3.connect(handlers.DB_PATH)
+    db.execute("UPDATE session_index SET turn_count = 1, message_count = 1, file_size = 1, indexed_at = ? "
+               "WHERE session_id = ?", (counted_at, session_id))
+    db.commit()
+    db.close()
+
+
+def test_a_live_session_is_recounted_when_its_transcript_grew(client, projects_dir):
+    stale_row("dc88c6b4", "2026-01-01T00:00:00+00:00")
+    with client.websocket_connect("/api/ws") as ws:
+        ws.receive_json()
+        sessions = {s["session_id"]: s for s in request(ws, "r1", "sessions.list")["result"]}
+    assert sessions["dc88c6b4"]["turn_count"] == 4 and sessions["dc88c6b4"]["message_count"] == 5
+
+
+def test_a_live_sessions_counts_follow_its_transcript_on_the_next_refresh(client, projects_dir):
+    reply = {"type": "assistant", "timestamp": "2026-10-31T17:26:00Z", "uuid": "a9",
+             "message": {"role": "assistant", "model": "claude-opus-5-5", "content": [{"type": "text", "text": "Fixed."}]}}
+    with client.websocket_connect("/api/ws") as ws:
+        ws.receive_json()
+        before = {s["session_id"]: s for s in request(ws, "f1", "sessions.list")["result"]}["dc88c6b4"]
+        with open(projects_dir / "dc88c6b4.jsonl", "a") as transcript:
+            transcript.write(json.dumps(reply) + "\n")
+        after = {s["session_id"]: s for s in request(ws, "f2", "sessions.list")["result"]}["dc88c6b4"]
+    assert (before["turn_count"], before["message_count"]) == (4, 5)
+    assert (after["turn_count"], after["message_count"]) == (5, 6)   # no throttle: the next refresh has it
+
+
+def test_secrets_in_a_transcript_never_reach_the_browser(client, indexed):
+    key = "sk-ant-api03-" + "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8S9t0U1v2W3x4"
+    leaked = {"type": "user", "timestamp": "2026-10-31T17:30:00Z", "uuid": "u9",
+              "message": {"role": "user", "content": f"my key is {key}, set it for me"}}
+    with open(indexed, "a") as transcript:
+        transcript.write(json.dumps(leaked) + "\n")
+    with client.websocket_connect("/api/ws") as ws:
+        ws.receive_json()
+        reply = request(ws, "k1", "sessions.turns", {"session_id": "dc88c6b4"})
+    assert key not in json.dumps(reply)
+    # it follows another message of yours, so it is the last block of the last (merged) turn
+    assert reply["result"]["turns"][-1]["blocks"][-1] == {"type": "text", "text": "my key is [REDACTED], set it for me"}
 
 
 def test_the_end_hook_can_report_a_session_ended_to_the_dashboard(client, projects_dir):

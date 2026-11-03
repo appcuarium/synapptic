@@ -1,8 +1,8 @@
 // Sessions: the mockup's session browser. The project comes from the sidebar (?project=), the session from a
 // tile (?session=). Sessions slide across the top as Machine's tile strip (shade = conversation length), the
 // conversation fills the middle in pages of 100 turns, the stats row and the connection bar sit below.
-import { useInfiniteQuery } from '@tanstack/react-query';
-import { useMemo, useState } from 'react';
+import { useInfiniteQuery, useQuery } from '@tanstack/react-query';
+import { useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { PageHeader } from '@/components/layout/PageHeader';
 import { fieldClasses } from '@/components/machine/field';
@@ -17,6 +17,11 @@ import { formatCount, formatDateTime } from './format';
 import { LIVE_REFRESH_MS, type SessionRow, type SessionStats, type TurnsPage } from './types';
 
 const PAGE_SIZE = 100;
+// A live session's new turns: asked for every 2s (the server reads only the transcript's new bytes), up to the
+// server's page limit, followed down while the reader is within FOLLOW_SLACK_PX of the bottom.
+const LIVE_TURNS_MS = 2_000;
+const LIVE_TURNS_MAX = 500;
+const FOLLOW_SLACK_PX = 80;
 // Machine's tiles grow to fit names of up to ~55 characters (measured: 120-264px). Session titles run to 120,
 // so the tile shows the first 48 and the tooltip has the whole title.
 const TILE_NAME_CHARS = 48;
@@ -40,8 +45,8 @@ function StatCell({ label, value, sub }: { label: string; value: string; sub: st
   return (
     <div className="flex min-h-[68px] shrink-0 flex-col items-center justify-start px-1 sm:px-3 py-2">
       <span className="whitespace-nowrap text-center text-[8px] sm:text-[10px] text-fg-subtle uppercase tracking-wide mb-0.5">{label}</span>
-      <span className="whitespace-nowrap text-center text-[13px] sm:text-lg font-medium text-primary num">{value}</span>
-      <span className="whitespace-nowrap text-center text-[8px] sm:text-[10px] text-fg-subtle num">{sub}</span>
+      <span className="whitespace-nowrap text-center text-[13px] sm:text-lg font-medium text-primary">{value}</span>
+      <span className="whitespace-nowrap text-center text-[8px] sm:text-[10px] text-fg-subtle">{sub}</span>
     </div>
   );
 }
@@ -77,7 +82,7 @@ function ConnectionBar({ session }: { session: SessionRow | undefined }) {
           <div className="flex items-center gap-3 text-fg-subtle">
             <span>SESSION <span className="text-fg-2">{session.session_id.slice(0, 8)}</span></span>
             <span className="hidden sm:inline">MODEL <span className="text-fg-2">{session.model}</span></span>
-            <span className="hidden sm:inline">SIZE <span className="text-fg-2 num">{(session.file_size / 1e6).toFixed(1)} MB</span></span>
+            <span className="hidden sm:inline">SIZE <span className="text-fg-2">{(session.file_size / 1e6).toFixed(1)} MB</span></span>
           </div>
         )}
       </div>
@@ -122,7 +127,30 @@ export function SessionsPage() {
   }));
   const select = (id: string) => setParams((next) => { next.set('session', id); return next; });
   const firstPage = turns.data?.pages[0];
-  const shown = turns.data?.pages.flatMap((page) => page.turns) ?? [];
+  const loaded = turns.data?.pages.flatMap((page) => page.turns) ?? [];
+  // A live session with its whole conversation loaded: ask for everything from the last loaded turn on (it may
+  // have grown) every LIVE_TURNS_MS; the server reads only what the transcript added.
+  const liveBase = Math.max(0, loaded.length - 1);
+  const live = useQuery({
+    queryKey: ['sessions.turns.live', selected?.session_id, liveBase],
+    queryFn: () => client.request<TurnsPage>('sessions.turns', { session_id: selected!.session_id, offset: liveBase, limit: LIVE_TURNS_MAX }),
+    enabled: Boolean(selected?.live) && Boolean(firstPage) && !turns.hasNextPage,
+    refetchInterval: LIVE_TURNS_MS,
+  });
+  const shown = live.data ? [...loaded.slice(0, live.data.offset), ...live.data.turns] : loaded;
+  const stats = live.data?.stats ?? firstPage?.stats;
+
+  // Follow new turns down while the reader is at the bottom; stay put once they scroll up to read.
+  const chatRef = useRef<HTMLDivElement>(null);
+  const followRef = useRef(false);
+  const onChatScroll = () => {
+    const chat = chatRef.current;
+    if (chat) followRef.current = chat.scrollHeight - chat.scrollTop - chat.clientHeight < FOLLOW_SLACK_PX;
+  };
+  useLayoutEffect(() => {
+    const chat = chatRef.current;
+    if (chat && followRef.current) chat.scrollTop = chat.scrollHeight;
+  }, [live.dataUpdatedAt]);
 
   return (
     <section className="h-[calc(100dvh-3rem)] flex flex-col">
@@ -145,7 +173,7 @@ export function SessionsPage() {
           </button>
         } />
 
-      <div className="flex-1 min-h-0 overflow-y-auto p-5">
+      <div ref={chatRef} onScroll={onChatScroll} className="flex-1 min-h-0 overflow-y-auto p-5">
         {sessions.isPending && <p className="text-sm text-fg-subtle">Loading sessions…</p>}
         {sessions.error && <p className="text-sm text-fg-subtle">Could not load the sessions: {sessions.error.message}</p>}
         {sessions.data && visible.length === 0 && <p className="text-sm text-fg-subtle">No sessions match.</p>}
@@ -161,7 +189,7 @@ export function SessionsPage() {
         )}
       </div>
 
-      {firstPage && selected && <StatsRow session={selected} stats={firstPage.stats} />}
+      {stats && selected && <StatsRow session={selected} stats={stats} />}
       <ConnectionBar session={selected} />
     </section>
   );

@@ -24,46 +24,79 @@ def parse_session_full(jsonl_path: Path, scrub: bool = True) -> list[dict]:
     system records) without JSON parsing — same compression trick as filter.py.
     Only lines containing "user" or "assistant" type markers get parsed.
     """
-    raw_turns = []
-
+    merged: list[dict] = []
     with open(jsonl_path) as f:
         for line in f:
-            # Include compact_boundary system records alongside user/assistant
-            is_conversation = '"type":"user"' in line or '"type":"assistant"' in line or '"type": "user"' in line or '"type": "assistant"' in line
-            is_compaction = '"compact_boundary"' in line
-            if not is_conversation and not is_compaction:
-                continue
-            try:
-                record = json.loads(line)
-            except json.JSONDecodeError:
-                continue
+            turn = parse_line(line, scrub=scrub)
+            if turn:
+                merge_turn(merged, turn)
+    return merged
 
-            record_type = record.get("type")
 
-            # Compaction boundary → insert a marker turn
-            if record_type == "system" and record.get("subtype") == "compact_boundary":
-                meta = record.get("compactMetadata", {})
-                pre_tokens = meta.get("preTokens", 0)
-                trigger = meta.get("trigger", "auto")
-                raw_turns.append({
-                    "role": "system",
-                    "uuid": record.get("uuid", ""),
-                    "timestamp": record.get("timestamp", ""),
-                    "blocks": [{"type": "compaction", "trigger": trigger, "pre_tokens": pre_tokens}],
-                    "usage": None,
-                    "model": None,
-                })
-                continue
+def parse_line(line: str, scrub: bool = True) -> dict | None:
+    """One transcript line as a raw turn, or None for a line the conversation does not show.
 
-            if record_type not in ("user", "assistant"):
-                continue
+    A string pre-filter skips non-conversation lines (progress, file-history, system records) without JSON
+    parsing. Kept: user and assistant records, compaction boundaries, and messages the user sent while the
+    agent was working (an "attachment" of type "queued_command"; Claude Code does not write them as user records).
+    """
+    is_conversation = '"type":"user"' in line or '"type":"assistant"' in line or '"type": "user"' in line or '"type": "assistant"' in line
+    is_compaction = '"compact_boundary"' in line
+    is_queued = '"queued_command"' in line
+    if not is_conversation and not is_compaction and not is_queued:
+        return None
+    try:
+        record = json.loads(line)
+    except json.JSONDecodeError:
+        return None
+    return turn_from_record(record, scrub=scrub) if isinstance(record, dict) else None
 
-            turn = parse_record(record, scrub=scrub)
-            if turn and turn.get("blocks"):
-                raw_turns.append(turn)
 
-    # Merge consecutive same-role turns and attach tool_results to assistant turns
-    return merge_turns(raw_turns)
+def turn_from_record(record: dict, scrub: bool = True) -> dict | None:
+    """A decoded transcript record as a raw turn, or None (parse_line without the pre-filter and decoding)."""
+    record_type = record.get("type")
+
+    # Compaction boundary → a marker turn
+    if record_type == "system" and record.get("subtype") == "compact_boundary":
+        meta = record.get("compactMetadata", {})
+        return {
+            "role": "system",
+            "uuid": record.get("uuid", ""),
+            "timestamp": record.get("timestamp", ""),
+            "blocks": [{"type": "compaction", "trigger": meta.get("trigger", "auto"), "pre_tokens": meta.get("preTokens", 0)}],
+            "usage": None,
+            "model": None,
+            "responses": {},
+        }
+
+    if record_type == "attachment":
+        return parse_queued_message(record, scrub=scrub)
+
+    if record_type not in ("user", "assistant"):
+        return None
+    turn = parse_record(record, scrub=scrub)
+    return turn if turn and turn.get("blocks") else None
+
+
+def parse_queued_message(record: dict, scrub: bool = True) -> dict | None:
+    """A message the user typed while the agent was working, as a user turn."""
+    attachment = record.get("attachment") or {}
+    if attachment.get("type") != "queued_command":
+        return None
+    if not attachment.get("humanTurn") and (attachment.get("origin") or {}).get("kind") != "human":
+        return None
+    text = str(attachment.get("prompt") or "").strip()
+    if not text:
+        return None
+    return {
+        "role": "user",
+        "uuid": record.get("uuid", ""),
+        "timestamp": attachment.get("timestamp") or record.get("timestamp", ""),
+        "blocks": [{"type": "text", "text": scrub_text(text) if scrub else text}],
+        "usage": None,
+        "model": None,
+        "responses": {},
+    }
 
 
 def parse_record(record: dict, scrub: bool = True) -> dict | None:
@@ -189,41 +222,44 @@ def merge_turns(raw_turns: list[dict]) -> list[dict]:
     - User records that contain ONLY tool_result blocks → attach to preceding assistant turn
     - User records with real text → start a new user turn
     """
-    if not raw_turns:
-        return []
-
-    merged = []
+    merged: list[dict] = []
     for turn in raw_turns:
-        # System turns (compaction markers) are never merged
-        if turn["role"] == "system":
-            merged.append(turn)
-            continue
-
-        # User turn with only tool_result blocks → attach to previous assistant
-        if turn["role"] == "user":
-            has_text = any(b["type"] == "text" for b in turn["blocks"])
-            has_tool_result = any(b["type"] == "tool_result" for b in turn["blocks"])
-            if not has_text and has_tool_result and merged and merged[-1]["role"] == "assistant":
-                merged[-1]["blocks"].extend(turn["blocks"])
-                continue
-
-        # Same role as previous → merge
-        if merged and merged[-1]["role"] == turn["role"]:
-            prev = merged[-1]
-            prev["blocks"].extend(turn["blocks"])
-            # Sum usage for assistant turns, each API response once (its records repeat the same usage)
-            if turn["role"] == "assistant" and turn.get("responses"):
-                prev_responses = prev.setdefault("responses", {})
-                for response_id, response in turn["responses"].items():
-                    prev_responses.setdefault(response_id, response)
-                prev["usage"] = summed_usage(prev_responses)
-            if not prev["model"] and turn["model"]:
-                prev["model"] = turn["model"]
-            continue
-
-        merged.append(turn)
-
+        merge_turn(merged, turn)
     return merged
+
+
+def merge_turn(merged: list[dict], turn: dict) -> int:
+    """Fold one raw turn into the merged list (merge_turns' rules); return the index of the turn it changed or
+    added, so a reader that appends as the transcript grows knows what to send again."""
+    # System turns (compaction markers) are never merged
+    if turn["role"] == "system":
+        merged.append(turn)
+        return len(merged) - 1
+
+    # User turn with only tool_result blocks → attach to previous assistant
+    if turn["role"] == "user":
+        has_text = any(b["type"] == "text" for b in turn["blocks"])
+        has_tool_result = any(b["type"] == "tool_result" for b in turn["blocks"])
+        if not has_text and has_tool_result and merged and merged[-1]["role"] == "assistant":
+            merged[-1]["blocks"].extend(turn["blocks"])
+            return len(merged) - 1
+
+    # Same role as previous → merge
+    if merged and merged[-1]["role"] == turn["role"]:
+        prev = merged[-1]
+        prev["blocks"].extend(turn["blocks"])
+        # Sum usage for assistant turns, each API response once (its records repeat the same usage)
+        if turn["role"] == "assistant" and turn.get("responses"):
+            prev_responses = prev.setdefault("responses", {})
+            for response_id, response in turn["responses"].items():
+                prev_responses.setdefault(response_id, response)
+            prev["usage"] = summed_usage(prev_responses)
+        if not prev["model"] and turn["model"]:
+            prev["model"] = turn["model"]
+        return len(merged) - 1
+
+    merged.append(turn)
+    return len(merged) - 1
 
 
 def response_cost(usage: dict, rates: dict) -> float:

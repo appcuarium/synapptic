@@ -17,9 +17,11 @@ from synapptic import providers
 from synapptic.config import CLAUDE_PROJECTS_DIR
 from synapptic.dashboard.hub import Hub
 from synapptic.dashboard.protocol import ErrorCode
-from synapptic.sessions.indexer import extract_session_metadata
-from synapptic.sessions.parse import compute_session_stats, parse_session_full
+from synapptic.sessions.indexer import tail_metadata
+from synapptic.scrub import scrub_text
+from synapptic.sessions.parse import SHOWN_BLOCK_TYPES, compute_session_stats
 from synapptic.sessions.store import DB_PATH, SessionStore
+from synapptic.sessions.tail import TranscriptTail
 from synapptic.state import include_headless_sessions, is_excluded_transcript, slug_from_project_dir
 
 CONFIG_TOPIC = "config"
@@ -33,7 +35,9 @@ LIVE_WINDOW_SECONDS = 300
 # The index columns the browser gets; file_path and project_dir stay on the server.
 PUBLIC_SESSION_FIELDS = ("session_id", "project", "title", "model", "first_timestamp", "last_timestamp",
                          "message_count", "turn_count", "file_size")
-# The last session opened, parsed once: a long transcript takes seconds, and every page reads from it.
+# Incremental readers of the transcripts in use (live ones, the one on screen): path -> TranscriptTail, most
+# recently used last. Reading a transcript once takes seconds for the largest; after that only new bytes are read.
+TAIL_CACHE_SIZE = 8
 parsed_session_cache: dict = {}
 
 
@@ -178,25 +182,40 @@ def recent_transcripts(now: float) -> list[Path]:
 
 
 def index_transcript(store: SessionStore, path: Path) -> None:
-    """Add a session the index has not seen yet (sessions are otherwise indexed when they end)."""
-    meta = extract_session_metadata(path)
-    if not meta:
+    """Index a session from its transcript as read so far (new sessions are otherwise indexed when they end)."""
+    tail = tail_for(path)
+    with tail.lock:
+        tail.update()
+        meta = tail_metadata(tail)
+    if not meta["message_count"]:
         return
     store.index_session(session_id=path.stem, project=slug_from_project_dir(path.parent.name), project_dir=path.parent.name,
                         title=meta["title"], model=meta["model"], first_ts=meta["first_timestamp"],
-                        last_ts=meta["last_timestamp"], msg_count=meta["message_count"], file_size=path.stat().st_size,
+                        last_ts=meta["last_timestamp"], msg_count=meta["message_count"], file_size=tail.offset,
                         file_path=str(path), first_user_message=meta["first_user_message"],
                         turn_count=meta["turn_count"])
 
 
+def tail_for(path: Path) -> TranscriptTail:
+    """The shared incremental reader of a transcript (the most recently used TAIL_CACHE_SIZE are kept)."""
+    # One reader per file whatever path names it (a symlinked projects folder, the index's stored path).
+    # Raw text in memory: display_block scrubs only what is sent to the browser.
+    real = path.resolve()
+    key = str(real)
+    tail = parsed_session_cache.pop(key, None) or TranscriptTail(real, scrub=False)
+    parsed_session_cache[key] = tail
+    while len(parsed_session_cache) > TAIL_CACHE_SIZE:
+        parsed_session_cache.pop(next(iter(parsed_session_cache)))
+    return tail
+
+
 def read_sessions(project: str | None) -> list[dict]:
+    """The index, with every live session brought up to its transcript's latest line (new bytes only)."""
     store = open_index()
     try:
         recent = recent_transcripts(time.time())
-        known = store.get_indexed_session_ids()
         for path in recent:
-            if path.stem not in known:
-                index_transcript(store, path)
+            index_transcript(store, path)
         live = {path.stem for path in recent} - store.get_ended_session_ids()
         return [{**public_session(row), "live": row["session_id"] in live}
                 for row in store.get_indexed_sessions(project=project)]
@@ -222,11 +241,12 @@ def read_session_row(session_id: str) -> dict | None:
 
 
 def display_block(block: dict) -> dict | None:
-    """The part of a block the page shows: text, a tool chip, a compaction marker. Thinking and tool output stay here."""
+    """The part of a block the page shows: text, a tool chip, a compaction marker. Thinking and tool output stay here.
+    Secrets are scrubbed here, on what is sent, not when the transcript is read."""
     if block["type"] == "text":
-        return {"type": "text", "text": block["text"]}
+        return {"type": "text", "text": scrub_text(block["text"])}
     if block["type"] == "tool_use":
-        return {"type": "tool_use", "name": block["name"], "summary": block["input_summary"][:TOOL_SUMMARY_LENGTH]}
+        return {"type": "tool_use", "name": block["name"], "summary": scrub_text(block["input_summary"][:TOOL_SUMMARY_LENGTH])}
     if block["type"] == "compaction":
         return block
     return None
@@ -242,15 +262,14 @@ def display_turns(turns: list[dict]) -> list[dict]:
     return shown
 
 
-def parsed_session(path: Path) -> tuple[list[dict], dict]:
-    """(turns as shown, stats) for a transcript; reparsed only when the file changed."""
-    stat = path.stat()
-    key = (str(path), stat.st_mtime_ns, stat.st_size)
-    if parsed_session_cache.get("key") != key:
-        turns = parse_session_full(path)
-        parsed_session_cache.clear()
-        parsed_session_cache.update(key=key, turns=display_turns(turns), stats=compute_session_stats(turns))
-    return parsed_session_cache["turns"], parsed_session_cache["stats"]
+def parsed_session(path: Path, offset: int, limit: int) -> tuple[list[dict], dict, int]:
+    """(the shown turns offset..offset+limit, stats, number of shown turns) of a transcript read up to its latest
+    line. Only new bytes are read, and only the requested turns are built for display."""
+    tail = tail_for(path)
+    with tail.lock:
+        tail.update()
+        shown = [turn for turn in tail.turns if any(block["type"] in SHOWN_BLOCK_TYPES for block in turn["blocks"])]
+        return display_turns(shown[offset:offset + limit]), compute_session_stats(tail.turns), len(shown)
 
 
 def read_session_turns(params: SessionTurnsParams) -> dict:
@@ -260,9 +279,8 @@ def read_session_turns(params: SessionTurnsParams) -> dict:
     path = Path(row["file_path"] or "")
     if not path.is_file():
         raise MethodError(ErrorCode.INVALID_PARAMS, f"the transcript of {params.session_id} is no longer on disk")
-    turns, stats = parsed_session(path)
-    return {"session": public_session(row), "stats": stats, "total": len(turns), "offset": params.offset,
-            "turns": turns[params.offset:params.offset + params.limit]}
+    turns, stats, total = parsed_session(path, params.offset, params.limit)
+    return {"session": public_session(row), "stats": stats, "total": total, "offset": params.offset, "turns": turns}
 
 
 async def sessions_projects(params: dict, hub: Hub) -> list[dict]:

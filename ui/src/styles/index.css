@@ -116,9 +116,6 @@
     outline: 2px solid var(--ring);
     outline-offset: -2px;
   }
-  .num {
-    font-variant-numeric: tabular-nums;
-  }
   /* Machine's TileStripShell: hidden scrollbar, grab cursor, brighter tile on hover */
   .strip-scroll {
     -ms-overflow-style: none;

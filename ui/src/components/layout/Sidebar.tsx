@@ -57,7 +57,7 @@ function ProjectNav({ onPick, flyout = false }: { onPick: () => void; flyout?: b
           title={item.label} onClick={onPick}
           className={cn(projectClasses, flyout && 'pl-4', current === item.slug ? projectOn : projectOff)}>
           <span className="truncate">{item.label}</span>
-          <span className="text-[11px] text-fg-faint num shrink-0">{item.count}</span>
+          <span className="text-[11px] text-fg-faint shrink-0">{item.count}</span>
         </Link>
       ))}
     </div>
