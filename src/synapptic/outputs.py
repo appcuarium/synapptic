@@ -77,6 +77,23 @@ OUTPUTS = {
 }
 
 
+# Where each project-root target puts its rules (relative to the project root), and how it puts them there:
+# "section" targets keep the user's own file and own only a marked section; "file" targets own the whole file.
+MARKER_START = "<!-- synapptic:start -->"
+MARKER_END = "<!-- synapptic:end -->"
+PROJECT_FILES = {
+    "cursor": (".cursor/rules/synapptic.mdc", "file"),
+    "copilot": (".github/copilot-instructions.md", "section"),
+    "gemini": (".gemini/styleguide.md", "section"),
+    "codex": ("AGENTS.md", "section"),
+    "windsurf": (".windsurfrules", "file"),
+    "cline": (".clinerules", "file"),
+    "aider": ("CONVENTIONS.md", "file"),
+    "continue": (".continuerules", "file"),
+}
+ARCHETYPE_FILE = "user_archetype.md"
+
+
 def write_claude_code(archetype: str, memory_dir: Path) -> bool:
     """Write archetype to Claude Code memory system with YAML frontmatter."""
     frontmatter = (

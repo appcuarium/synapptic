@@ -29,6 +29,7 @@ interface Draft {
   apiKey: string;           // write-only: empty = leave the stored key as it is
   batchesExtract: boolean;
   includeHeadless: boolean;
+  writeRules: boolean;
 }
 
 function draftFrom(config: DashboardConfig): Draft {
@@ -38,6 +39,7 @@ function draftFrom(config: DashboardConfig): Draft {
     apiKey: '',
     batchesExtract: Boolean(config.batches?.extract),
     includeHeadless: Boolean(config.include_headless_sessions),
+    writeRules: config.write_rules,
   };
 }
 
@@ -50,6 +52,7 @@ function patchFrom(draft: Draft, config: DashboardConfig): ConfigPatch {
   if (draft.includeHeadless !== Boolean(config.include_headless_sessions)) {
     patch.include_headless_sessions = draft.includeHeadless;
   }
+  if (draft.writeRules !== config.write_rules) patch.write_rules = draft.writeRules;
   return patch;
 }
 
@@ -155,6 +158,9 @@ export function SettingsPage() {
           <ToggleRow id="include-headless" label="Headless runs"
             description="treat claude -p runs as sessions (scratchpads never count)"
             on={draft.includeHeadless} onChange={(on) => update({ includeHeadless: on })} />
+          <ToggleRow id="write-rules" label="Rules in your tools"
+            description="plug the learned rules into your coding tools (off: still learning)"
+            on={draft.writeRules} onChange={(on) => update({ writeRules: on })} />
         </div>
       </div>
       {save.error && <p className="p-4 text-sm text-fg-muted gutter">Not saved: {save.error.message}</p>}

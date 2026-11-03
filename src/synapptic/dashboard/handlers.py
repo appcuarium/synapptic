@@ -17,6 +17,7 @@ from synapptic import providers
 from synapptic.config import CLAUDE_PROJECTS_DIR
 from synapptic.dashboard.hub import Hub
 from synapptic.dashboard.protocol import ErrorCode
+from synapptic.integrate import integrate_archetypes, rules_enabled, withdraw_rules
 from synapptic.sessions.indexer import tail_metadata
 from synapptic.scrub import scrub_text
 from synapptic.sessions.parse import SHOWN_BLOCK_TYPES, compute_session_stats
@@ -61,6 +62,7 @@ class ConfigPatch(BaseModel):
     api_key: str | None = Field(default=None, max_length=512)   # write-only; "" clears it
     batches: BatchesPatch | None = None
     include_headless_sessions: bool | None = None
+    write_rules: bool | None = None
 
 
 def public_config(config: dict) -> dict:
@@ -69,6 +71,7 @@ def public_config(config: dict) -> dict:
     view = {name: value for name, value in config.items() if name != "api_key"}
     view["api_key_set"] = bool(key)
     view["api_key_hint"] = key[-API_KEY_HINT_LENGTH:] if len(key) > API_KEY_HINT_LENGTH else ""
+    view["write_rules"] = rules_enabled(config)   # explicit: the file leaves it out until switched off
     return view
 
 
@@ -90,13 +93,22 @@ def apply_patch(config: dict, patch: ConfigPatch) -> dict:
         updated["batches"] = {**(updated.get("batches") or {}), "extract": patch.batches.extract}
     if patch.include_headless_sessions is not None:
         updated["include_headless_sessions"] = patch.include_headless_sessions
+    if patch.write_rules is not None:
+        updated["write_rules"] = patch.write_rules
     return updated
 
 
 def update_config_file(patch: ConfigPatch) -> dict:
-    """Load, patch and save the config file. Runs on a worker thread."""
-    updated = apply_patch(providers.load_config(), patch)
+    """Load, patch and save the config file. Runs on a worker thread. Switching the rules deploys them into the
+    projects (on) or takes them out (off), as `synapptic config rules on|off` does."""
+    config = providers.load_config()
+    updated = apply_patch(config, patch)
     providers.save_config(updated)
+    if rules_enabled(updated) != rules_enabled(config):
+        if rules_enabled(updated):
+            integrate_archetypes()
+        else:
+            withdraw_rules()
     return updated
 
 

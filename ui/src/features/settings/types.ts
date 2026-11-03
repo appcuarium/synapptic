@@ -7,6 +7,7 @@ export interface DashboardConfig {
   api_key_hint: string;
   batches?: { extract?: boolean };
   include_headless_sessions?: boolean;
+  write_rules: boolean;
   [key: string]: unknown;
 }
 
@@ -25,4 +26,5 @@ export interface ConfigPatch extends Record<string, unknown> {
   api_key?: string;
   batches?: { extract?: boolean };
   include_headless_sessions?: boolean;
+  write_rules?: boolean;
 }

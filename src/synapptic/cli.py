@@ -12,7 +12,7 @@ import yaml
 
 from synapptic import providers
 from synapptic.config import CHECKPOINT_MIN_TOKENS, SYNAPPTIC_DIR, SYNTHESIZE_MIN_HOURS
-from synapptic.integrate import integrate_archetypes
+from synapptic.integrate import RULES_DIR, integrate_archetypes, rules_enabled, withdraw_rules
 from synapptic.pipeline import (
     checkpoint_session,
     collect_batches,
@@ -78,6 +78,7 @@ def config_show():
     click.echo(f"Model:           {model}")
     click.echo(f"Profiling mode:  {mode}")
     click.echo(f"Outputs:         {', '.join(outputs)}")
+    click.echo(f"Rules:           {'on' if rules_enabled(config) else 'off'}")
     if api_key:
         click.echo(f"API key:         ...{api_key[-4:]}")
     if api_url:
@@ -205,6 +206,31 @@ def config_batches():
     providers.save_config(config)
     for consumer in providers.BATCH_CONSUMERS:
         click.echo(f"  {consumer}: {'on' if providers.batches_enabled(config, consumer) else 'off'}")
+
+
+@config_group.command("rules")
+@click.argument("state", required=False, type=click.Choice(["on", "off"]))
+def config_rules(state):
+    """Plug the learned rules into your coding tools (on) or take them out (off). Learning goes on either way."""
+    config = providers.load_config()
+    if state is None:
+        click.echo(f"Rules: {'on' if rules_enabled(config) else 'off'}")
+        return
+    config["write_rules"] = state == "on"
+    providers.save_config(config)
+    if state == "on":
+        updated = integrate_archetypes()
+        for slug, target, path, *_ in updated:
+            click.echo(f"  [{slug}] → {target}: {path}")
+        click.echo(f"Rules on: deployed to {len(updated)} target(s).")
+        return
+    report = withdraw_rules()
+    for path, action in report:
+        click.echo(f"  {action}: {path}")
+    kept =[path for path, action in report if action == "kept"]
+    if kept:
+        click.echo(f"  {len(kept)} file(s) kept: no synapptic notice, so they may be yours. Remove them by hand if not.")
+    click.echo(f"Rules off: the tools no longer get them. Still learning; the rules stay in {RULES_DIR}.")
 
 
 @config_group.command("mode")
@@ -1419,6 +1445,11 @@ def install_cmd():
             click.echo("  Already registered")
 
     ensure_dirs()
+    # Rules kept from an earlier install go back into the projects (uninstall took them out)
+    if rules_enabled(providers.load_config()):
+        deployed = integrate_archetypes()
+        if deployed:
+            click.echo(f"Rules: deployed to {len(deployed)} target(s) from {RULES_DIR}")
     click.echo()
     click.echo("Installed. Run 'synapptic ingest' to process existing sessions.")
 
@@ -1466,31 +1497,10 @@ def uninstall_cmd():
 
     # 4. Remove generated archetype files + MEMORY.md references
     click.echo("[4/4] Removing generated files...")
-    projects_dir = claude_dir / "projects"
-    arch_count = 0
-    mem_count = 0
-    if projects_dir.exists():
-        for proj in projects_dir.iterdir():
-            if not proj.is_dir():
-                continue
-            memory_dir = proj / "memory"
-            arch_file = memory_dir / "user_archetype.md"
-            if arch_file.exists():
-                arch_file.unlink()
-                arch_count += 1
-            mem_file = memory_dir / "MEMORY.md"
-            if mem_file.exists():
-                content = mem_file.read_text()
-                if "user_archetype.md" in content:
-                    lines = [
-                        l for l in content.splitlines()
-                        if not ("user_archetype.md" in l and "Auto-generated user archetype" in l)
-                    ]
-                    mem_file.write_text("\n".join(lines) + "\n")
-                    mem_count += 1
-
-    click.echo(f"  Removed {arch_count} user_archetype.md file(s)")
-    click.echo(f"  Cleaned {mem_count} MEMORY.md reference(s)")
+    report = withdraw_rules()
+    for path, action in report:
+        click.echo(f"  {action}: {path}")
+    click.echo(f"  Removed {sum(action == 'removed' for _, action in report)} generated file(s) or section(s)")
 
     # Artifacts — prompt
     click.echo()
