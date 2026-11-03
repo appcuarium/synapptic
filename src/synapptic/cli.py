@@ -12,7 +12,7 @@ import yaml
 
 from synapptic import harness, providers
 from synapptic.config import CHECKPOINT_MIN_TOKENS, SYNAPPTIC_DIR, SYNTHESIZE_MIN_HOURS
-from synapptic.core import core_info
+from synapptic.core import CoreMissing, core_info, require_core
 from synapptic.integrate import RULES_DIR, integrate_archetypes, rules_enabled, withdraw_rules
 from synapptic.pipeline import (
     checkpoint_session,
@@ -82,6 +82,12 @@ def config_show():
         click.echo(f"Core:            synapptic-core {core['version']}")
     else:
         click.echo("Core:            synapptic-core not installed (pip install synapptic-core); synapptic cannot learn without it")
+    if core["installed"]:
+        try:
+            store = require_core().harness_store_info()
+            click.echo(f"Harness:         {store['rules']} rule(s), {store['events']} event(s), key in {store['key_source']}, {store['path']}")
+        except (CoreMissing, ValueError) as exc:
+            click.echo(f"Harness:         store unavailable ({exc})")
     click.echo(f"Provider:        {provider_name} ({provider})")
     click.echo(f"Model:           {model}")
     click.echo(f"Profiling mode:  {mode}")
@@ -1046,7 +1052,7 @@ def harness_mine(sessions, everything):
         click.echo(f"  {miss['session'][:8]}  {miss['rule_id']}  refused {miss['timestamp'][:19]}, no card this turn")
         click.echo(f"    prompt: {miss['prompt'][:PROMPT_SHOWN]!r}")
         if not entry["rule"]:
-            click.echo("    rule not found in the rules file(s); no proposal")
+            click.echo("    rule not in the harness store; no proposal")
         elif not entry["proposals"]:
             click.echo("    no describing phrase in the prompt; no proposal")
         for proposal in entry["proposals"]:
@@ -1081,7 +1087,7 @@ def harness_approve(key):
         proposal = harness.approve(key)
     except harness.HarnessError as exc:
         raise click.ClickException(str(exc))
-    click.echo(f"Approved {key}: {proposal['rule_id']} pre.prompt is now /{proposal['written']}/ in {proposal['rules_file']}")
+    click.echo(f"Approved {key}: the words of {proposal['rule_id']} are now /{proposal['written']}/")
 
 
 @harness_group.command("reject")
@@ -1093,6 +1099,18 @@ def harness_reject(key):
     except harness.HarnessError as exc:
         raise click.ClickException(str(exc))
     click.echo(f"Rejected {key}: {proposal['rule_id']} /{proposal['regex']}/")
+
+
+@harness_group.command("rules")
+@click.option("--json", "as_json", is_flag=True, help="The rules as JSON (a plain export)")
+def harness_rules(as_json):
+    """Show the rules the harness runs on, in words."""
+    try:
+        core = harness.require_core()
+        text = core.harness_export() if as_json else core.harness_rules_text()
+    except (harness.HarnessError, ValueError) as exc:
+        raise click.ClickException(str(exc))
+    click.echo(text.rstrip("\n") or "No rules in the harness store.")
 
 
 def proposal_key(proposal: dict) -> str:
@@ -1467,6 +1485,49 @@ HOOK_REGISTRATIONS = (
 )
 
 
+# The harness hooks run inside the core: one shim per role, run by the interpreter that holds the core.
+HARNESS_HOOKS = (
+    ("UserPromptSubmit", "*", "pre"),
+    ("PreToolUse", "Bash", "guard"),
+    ("PostToolUse", "Bash|Edit|Write|MultiEdit", "pre"),
+    ("PostToolUse", "Edit|Write|MultiEdit", "guard"),
+    ("Stop", "*", "guard"),
+)
+HARNESS_SHIM = "import synapptic_core as c; c.{role}()"
+
+
+def harness_command(role: str) -> str:
+    return f'{sys.executable} -c "{HARNESS_SHIM.format(role=role)}"'
+
+
+def register_harness_hook(hooks: dict, event: str, matcher: str, role: str) -> bool:
+    """Add the role's shim to settings.json hooks[event] under `matcher` unless already there. Returns True if added."""
+    entries = hooks.get(event)
+    if not isinstance(entries, list):
+        entries = []
+        hooks[event] = entries
+    marker = HARNESS_SHIM.format(role=role)
+    if any(entry.get("matcher") == matcher and any(marker in h.get("command", "") for h in entry.get("hooks", []))
+           for entry in entries if isinstance(entry, dict)):
+        return False
+    entries.append({"matcher": matcher, "hooks": [{"type": "command", "command": harness_command(role)}]})
+    return True
+
+
+def unregister_harness_hooks(hooks: dict) -> list[str]:
+    """Remove every entry that runs a core shim, whatever interpreter it names. Returns the events touched."""
+    touched = []
+    for event, entries in list(hooks.items()):
+        if not isinstance(entries, list):
+            continue
+        kept = [entry for entry in entries if not isinstance(entry, dict)
+                or not any("import synapptic_core" in h.get("command", "") for h in entry.get("hooks", []))]
+        if len(kept) != len(entries):
+            hooks[event] = kept
+            touched.append(event)
+    return touched
+
+
 def register_hook(hooks: dict, event: str, script: str) -> bool:
     """Add `script` to settings.json hooks[event] unless already there. Returns True if added."""
     entries = hooks.get(event)
@@ -1505,14 +1566,14 @@ def install_cmd():
     settings_path = claude_dir / "settings.json"
 
     # 1. Skill
-    click.echo("[1/3] Installing skill...")
+    click.echo("[1/4] Installing skill...")
     skills_dir.mkdir(parents=True, exist_ok=True)
     skill_src = bundle / "skill" / "SKILL.md"
     shutil.copy2(str(skill_src), str(skills_dir / "SKILL.md"))
     click.echo(f"  Done: {skills_dir}/")
 
     # 2. Hook scripts
-    click.echo("[2/3] Installing hooks (SessionEnd, Stop, PreCompact)...")
+    click.echo("[2/4] Installing hooks (SessionEnd, Stop, PreCompact)...")
     hooks_dir.mkdir(parents=True, exist_ok=True)
     for script in sorted({script for _, script in HOOK_REGISTRATIONS}):
         hook_dst = hooks_dir / script
@@ -1520,8 +1581,8 @@ def install_cmd():
         hook_dst.chmod(0o755)
         click.echo(f"  Done: {hook_dst}")
 
-    # 3. Register in settings.json
-    click.echo("[3/3] Registering hooks in settings.json...")
+    # 3. Register in settings.json: the pipeline scripts and the harness shims (the harness runs inside the core)
+    click.echo("[3/4] Registering hooks in settings.json...")
     settings = load_settings_json(settings_path)
     if settings is None:
         click.echo("  Failed to read settings.json — skipping hook registration")
@@ -1531,11 +1592,20 @@ def install_cmd():
             hooks = {}
             settings["hooks"] = hooks
         added = [event for event, script in HOOK_REGISTRATIONS if register_hook(hooks, event, script)]
+        added += [f"{event} ({matcher}) -> harness {role}" for event, matcher, role in HARNESS_HOOKS
+                  if register_harness_hook(hooks, event, matcher, role)]
         if added:
             save_settings_json(settings_path, settings)
             click.echo(f"  Done: {', '.join(added)}")
         else:
             click.echo("  Already registered")
+
+    # 4. The harness store's key goes into the OS secret store (interactive: this is the moment for any prompt)
+    click.echo("[4/4] Harness store key...")
+    try:
+        click.echo(f"  Done: key in {require_core().harness_init()}")
+    except (CoreMissing, ValueError) as exc:
+        click.echo(f"  Skipped: {exc}")
 
     ensure_dirs()
     # Rules kept from an earlier install go back into the projects (uninstall took them out)
@@ -1564,6 +1634,7 @@ def uninstall_cmd():
     else:
         hooks = settings.get("hooks", {})
         removed = [event for event, script in HOOK_REGISTRATIONS if unregister_hook(hooks, event, script)]
+        removed += [f"harness {event}" for event in unregister_harness_hooks(hooks)]
         if removed:
             save_settings_json(settings_path, settings)
             click.echo(f"  Removed: {', '.join(removed)}")

@@ -12,8 +12,9 @@ try:
 except ImportError:
     core = None
 
-# The core versions this synapptic can work with: same major and minor line.
-CORE_REQUIRED = ((0, 1), (0, 2))   # >= 0.1, < 0.2
+# The core versions this synapptic can work with: same major and minor line. 0.2 brought the harness hooks
+# and the rules store into the core; a 0.1 core has neither.
+CORE_REQUIRED = ((0, 2), (0, 3))   # >= 0.2, < 0.3
 NOT_INSTALLED = ("the synapptic-core package is not installed; synapptic needs it to learn from sessions "
                  "(pip install synapptic-core)")
 

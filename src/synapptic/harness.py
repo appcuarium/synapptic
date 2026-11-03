@@ -1,16 +1,15 @@
 """The harness feedback loop: refusals a coding-agent harness gave without having shown its context first
 become proposals for the words that rule should have known; the user approves or rejects each one; an
-approved proposal is written into the rules file.
+approved proposal's words are written into the rule in the harness store.
 
-Off unless config.yaml names the rules file (`harness: {rules: <path>}`). The loop's logic lives in the
-`synapptic-core` package (compiled, installed separately); this module is the plumbing around it:
-configuration, the rules files, the proposal store, the model call, session lookup.
+The rules, the hooks and the loop's logic live in the `synapptic-core` package (compiled, installed
+separately); this module is the plumbing around it: the proposal store, the model call, session lookup.
+It never reads a rule's contents, only its id.
 """
 
 import hashlib
 import json
 import os
-import re
 import time
 from pathlib import Path
 
@@ -25,7 +24,6 @@ from synapptic.state import find_session_transcripts
 
 HARNESS_DIR = SYNAPPTIC_DIR / "harness"
 PROPOSALS_PATH = HARNESS_DIR / "proposals.yaml"
-OPERATOR_ENTRYPOINT = "cli"
 PROMPT_EXCERPT = 240
 
 
@@ -43,32 +41,9 @@ def require_core():
 
 # ----- rules -----------------------------------------------------------------------------------------
 
-def rules_path(config: dict) -> Path | None:
-    """The harness rules file config.yaml names, or None: the integration is off by default."""
-    path = (config.get("harness") or {}).get("rules")
-    return Path(os.path.expanduser(str(path))) if path else None
-
-
-def read_rules(path: Path) -> list[dict]:
-    try:
-        return list(json.loads(path.read_text())["rules"])
-    except (OSError, ValueError, KeyError, TypeError):
-        return []
-
-
-def load_rules(global_path: Path, cwd: str = "") -> dict[str, dict]:
-    """Rules by id: the global file, plus <project>/.claude/harness-rules.json for the project holding `cwd`.
-    Each rule records the file it came from (`_file`)."""
-    files = [global_path]
-    root = require_core().project_root(cwd) if cwd else None
-    if root:
-        files.append(Path(root) / ".claude" / "harness-rules.json")
-    rules = {}
-    for file in files:
-        for rule in read_rules(file):
-            rule["_file"] = file
-            rules[rule["id"]] = rule
-    return rules
+def rule_ids() -> list[str]:
+    """The ids of the rules in the harness store."""
+    return list(require_core().harness_rule_ids())
 
 
 # ----- transcripts -----------------------------------------------------------------------------------
@@ -87,11 +62,8 @@ def phrase_regex(phrase: str) -> str:
 
 # ----- proposer --------------------------------------------------------------------------------------
 
-def llm_candidates(miss: dict, rule: dict, config: dict) -> list[dict]:
-    family = rule.get("family") or {}
-    prompt = require_core().candidate_prompt(miss["prompt"], miss["refusal"], (rule.get("pre") or {}).get("prompt", ""),
-                                             family.get("anchor", ""), rule.get("message", ""),
-                                             list(family.get("conventions") or []))
+def llm_candidates(miss: dict, config: dict) -> list[dict]:
+    prompt = require_core().harness_candidate_prompt(miss["rule_id"], miss["prompt"], miss["refusal"])
     raw = call_llm(prompt, config=config)
     if not raw:
         return []
@@ -105,13 +77,12 @@ def llm_candidates(miss: dict, rule: dict, config: dict) -> list[dict]:
     return [{"phrase": phrase, "regex": phrase_regex(phrase)} for phrase in phrases if phrase]
 
 
-def propose(miss: dict, rule: dict, corpus: list[str], config: dict, rejected: set[str]) -> list[dict]:
+def propose(miss: dict, corpus: list[str], config: dict, rejected: set[str]) -> list[dict]:
     """The candidates for one miss that pass the gate, each with its noise count over `corpus`."""
     kept = []
     core = require_core()
-    current = (rule.get("pre") or {}).get("prompt", "")
-    for candidate in llm_candidates(miss, rule, config):
-        if core.accepted(candidate["phrase"], candidate["regex"], miss["prompt"], current, sorted(rejected)):
+    for candidate in llm_candidates(miss, config):
+        if core.harness_accepted(miss["rule_id"], candidate["phrase"], candidate["regex"], miss["prompt"], sorted(rejected)):
             kept.append({**candidate, "matches": core.noise(candidate["regex"], corpus), "corpus": len(corpus)})
     return kept
 
@@ -141,11 +112,11 @@ def rejected_regexes(proposals: dict[str, dict], rule_id: str) -> set[str]:
     return {p["regex"] for p in proposals.values() if p.get("rule_id") == rule_id and p.get("status") == "rejected"}
 
 
-def record_proposal(proposals: dict[str, dict], miss: dict, candidate: dict, rule: dict) -> dict:
+def record_proposal(proposals: dict[str, dict], miss: dict, candidate: dict) -> dict:
     """Add the miss as a receipt of the proposal for (rule, regex), creating the proposal on its first receipt."""
     key = proposal_id(miss["rule_id"], candidate["regex"])
     proposal = proposals.setdefault(key, {
-        "kind": "vocabulary", "status": "pending", "rule_id": miss["rule_id"], "rules_file": str(rule["_file"]),
+        "kind": "vocabulary", "status": "pending", "rule_id": miss["rule_id"],
         "phrase": candidate["phrase"], "regex": candidate["regex"], "created": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
         "receipts": []})
     proposal["matches"] = candidate["matches"]
@@ -167,8 +138,8 @@ def approve(key: str) -> dict:
     if proposal["status"] != "pending":
         raise HarnessError(f"proposal {key} is already {proposal['status']}")
     try:
-        pattern = require_core().write_vocabulary(proposal["rules_file"], proposal["rule_id"], proposal["regex"],
-                                                  [r["prompt"] for r in proposal["receipts"]])
+        pattern = require_core().harness_extend_prompt(proposal["rule_id"], proposal["regex"],
+                                                       [r["prompt"] for r in proposal["receipts"]])
     except ValueError as exc:
         raise HarnessError(str(exc)) from exc
     proposal["status"] = "approved"
@@ -207,44 +178,33 @@ def operator_transcripts() -> list[Path]:
     return [path for path, _ in find_session_transcripts(include_headless=False).values()]
 
 
-def corpus_prompts(rule: dict, transcripts: list[Path]) -> list[str]:
-    """The prompts the user typed inside the rule's `where` scope. A transcript whose Claude project folder
-    decodes to a root outside the scope is not opened; any other is read and its prompts checked by cwd."""
-    where = re.compile(rule["where"]) if rule.get("where") else None
-    corpus = []
-    for path in transcripts:
-        root = resolve_project_root(path.parent.name)
-        if where and root and not where.search(str(root)):
-            continue
-        for prompt in transcript_prompts(path):
-            if prompt["entrypoint"] in ("", OPERATOR_ENTRYPOINT) and (not where or where.search(prompt["cwd"])):
-                corpus.append(prompt["text"])
-    return corpus
+def corpus_prompts(rule_id: str, transcripts: list[Path]) -> list[str]:
+    """The prompts the user typed inside the rule's scope: each transcript with its Claude project folder decoded
+    to a root (or "" when it cannot be), the core applies the rule's scope to the root and to each prompt's cwd."""
+    pairs = [(str(path), str(resolve_project_root(path.parent.name) or "")) for path in transcripts]
+    return list(require_core().harness_corpus_prompts(rule_id, pairs))
 
 
 def mine(transcripts: list[Path], config: dict | None = None, corpus_transcripts: list[Path] | None = None) -> list[dict]:
     """Mine the transcripts, propose for each miss, record the proposals. Returns one entry per miss:
-    {miss, rule, proposals: [proposal dicts]} (an unknown rule or no surviving candidate gives an empty list)."""
-    require_core()
+    {miss, rule (whether the store knows it), proposals: [proposal dicts]}."""
+    known = set(rule_ids())
+    if not known:
+        raise HarnessError("the harness store holds no rules; run `synapptic install` and migrate your rules first")
     config = config or load_config()
-    global_rules = rules_path(config)
-    if not global_rules:
-        raise HarnessError("the harness integration is off: set `harness: {rules: <path to harness-rules.json>}` in config.yaml")
     proposals = load_proposals()
     corpora: dict[str, list[str]] = {}
     results = []
     for path in transcripts:
         for miss in mine_transcript(path):
-            rules = load_rules(global_rules, miss["cwd"])
-            rule = rules.get(miss["rule_id"])
-            entry = {"miss": miss, "rule": rule, "proposals": []}
+            entry = {"miss": miss, "rule": miss["rule_id"] in known, "proposals": []}
             results.append(entry)
-            if not rule:
+            if not entry["rule"]:
                 continue
             if miss["rule_id"] not in corpora:
-                corpora[miss["rule_id"]] = corpus_prompts(rule, corpus_transcripts if corpus_transcripts is not None
+                corpora[miss["rule_id"]] = corpus_prompts(miss["rule_id"], corpus_transcripts if corpus_transcripts is not None
                                                           else operator_transcripts())
-            for candidate in propose(miss, rule, corpora[miss["rule_id"]], config, rejected_regexes(proposals, miss["rule_id"])):
-                entry["proposals"].append(record_proposal(proposals, miss, candidate, rule))
+            for candidate in propose(miss, corpora[miss["rule_id"]], config, rejected_regexes(proposals, miss["rule_id"])):
+                entry["proposals"].append(record_proposal(proposals, miss, candidate))
     save_proposals(proposals)
     return results

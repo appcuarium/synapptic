@@ -7,7 +7,8 @@
 - **What learns moved into `synapptic-core`**, a compiled package installed as a dependency (proprietary, free to use, binaries only): the transcript filter, the extraction prompt and parser, the profile merge, decay and promotion, the narrative synthesis, the harness loop. The modules of the same names in this package are the plumbing around it and keep their functions and signatures. Without the core installed, the commands that learn say so: `the synapptic-core package is not installed`.
 - **The default extraction pattern is built into the core** and can no longer be shown (`synapptic patterns show default` says so); `synapptic patterns create <name>` starts from a plain template. User patterns in `~/.synapptic/patterns/` work as before.
 - **`synapptic.config` lost the tuning constants** (decay factor, thresholds, dimension routing sets, the filter signal lists, the dimension descriptions); `DIMENSIONS` stays.
-- **`synapptic harness`**: `mine -s <session> | --all` finds the refusals a coding-agent harness gave without having shown its context first and proposes the missing words; `proposals`, `approve <id>`, `reject <id>`. Off unless `config.yaml` names the rules file (`harness: {rules: <path>}`).
+- **`synapptic harness`**: `mine -s <session> | --all` finds the refusals a coding-agent harness gave without having shown its context first and proposes the missing words; `proposals`, `approve <id>`, `reject <id>`; `rules` shows the rules the harness runs on (`--json` for a plain export).
+- **The harness runs inside the core.** Its rules and its event log live encrypted in `~/.synapptic/sessions.db`, the key in the OS keychain (an owner-only file where there is none); nothing is written into your projects. `synapptic install` registers the hook entry points and puts the key in place; `synapptic config show` reports the store. Requires synapptic-core 0.2.
 
 ### Removed: the relay
 

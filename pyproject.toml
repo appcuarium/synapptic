@@ -19,9 +19,9 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
     "Topic :: Software Development :: Quality Assurance",
 ]
-# synapptic-core: the compiled learning engine (proprietary, binaries on PyPI); synapptic.core checks >=0.1,<0.2.
+# synapptic-core: the compiled learning engine (proprietary, binaries on PyPI); synapptic.core checks >=0.2,<0.3.
 # anyio>=4.14.2: PYSEC-2026-4024 / 4025 (audit 2026-11-03)
-dependencies = ["click>=8.0", "pyyaml>=6.0", "anthropic>=0.84", "anyio>=4.14.2", "synapptic-core>=0.1,<0.2"]
+dependencies = ["click>=8.0", "pyyaml>=6.0", "anthropic>=0.84", "anyio>=4.14.2", "synapptic-core>=0.2,<0.3"]
 
 [project.optional-dependencies]
 # uvicorn[standard] brings a websocket library: the dashboard talks to the browser over a websocket.
