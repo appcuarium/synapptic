@@ -4,7 +4,8 @@ from pathlib import Path
 
 
 # State directory — all synaptic data lives here
-SYNAPPTIC_DIR = Path.home() / ".synapptic"
+# $SYNAPPTIC_DIR points a probe or a test at a home of its own; the core honours the same variable.
+SYNAPPTIC_DIR = Path(os.environ["SYNAPPTIC_DIR"]) if os.environ.get("SYNAPPTIC_DIR") else Path.home() / ".synapptic"
 GLOBAL_DIR = SYNAPPTIC_DIR / "global"
 PROJECTS_DIR = SYNAPPTIC_DIR / "projects"
 PROFILE_HISTORY_DIR = SYNAPPTIC_DIR / "profile_history"
