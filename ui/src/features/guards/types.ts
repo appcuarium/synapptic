@@ -28,7 +28,14 @@ export interface GuardRow {
   anchor: string;
   why: string;
   projects: string[]; // the indexed projects it applies to; [] = everywhere (Global)
-  numbers: GuardNumbers;
+  numbers?: GuardNumbers;   // joined on the page from guards.numbers, which arrives after the list
+}
+
+export interface GuardNumbersList {
+  days: number;
+  events: number;
+  transcripts: number;
+  numbers: Record<string, GuardNumbers>;
 }
 
 export interface GuardProject {
@@ -40,9 +47,6 @@ export interface GuardProject {
 }
 
 export interface GuardsList {
-  days: number;
-  events: number;
-  transcripts: number;
   projects: GuardProject[];
   rules: GuardRow[];
 }

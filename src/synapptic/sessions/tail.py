@@ -7,11 +7,14 @@ timestamps, titles, model) up to date, so the dashboard's counts, its conversati
 all read a transcript the same way, in one pass.
 """
 
+import hashlib
 import json
+import os
 import re
 import threading
 from pathlib import Path
 
+from synapptic.config import SYNAPPTIC_DIR
 from synapptic.sessions.parse import merge_turn, turn_from_record
 
 # Lines worth decoding: conversation records, compaction markers, mid-turn messages and the two title records.
@@ -19,6 +22,14 @@ from synapptic.sessions.parse import merge_turn, turn_from_record
 DECODE_PATTERN = re.compile(rb'"type": ?"(?:user|assistant|custom-title|ai-title)"|"compact_boundary"|"queued_command"')
 TITLE_LENGTH = 120
 FIRST_MESSAGE_LENGTH = 500
+# What a reader parsed is kept on disk, so the next process (a dashboard restart, `synapptic index`) resumes
+# from the offset read instead of parsing the whole transcript again: 3.4 s for 1.7 GB, 0.2 s to load back.
+# Saved the first time and then once a megabyte more has been read; a few new lines are cheap to read again.
+TAIL_CACHE_DIR = SYNAPPTIC_DIR / "cache" / "tails"
+TAIL_CACHE_VERSION = 1
+TAIL_SAVE_MIN_BYTES = 1_000_000
+SAVED_FIELDS = ("inode", "offset", "message_count", "first_timestamp", "last_timestamp", "model",
+                "first_user_message", "custom_title", "ai_title")
 
 
 def first_text(content) -> str:
@@ -40,6 +51,8 @@ class TranscriptTail:
         self.scrub = scrub
         self.lock = threading.Lock()
         self.reset()
+        self.saved_offset = 0              # the offset the cache on disk holds (0: none)
+        self.load()
 
     def reset(self) -> None:
         self.inode: int | None = None
@@ -55,6 +68,39 @@ class TranscriptTail:
         self.ai_title = ""                 # Claude Code's generated title
 
     @property
+    def cache_path(self) -> Path:
+        name = hashlib.sha1(str(self.path.resolve()).encode("utf-8")).hexdigest()
+        return TAIL_CACHE_DIR / f"{name}-{'scrubbed' if self.scrub else 'raw'}.json"
+
+    def load(self) -> bool:
+        """Resume from the cache on disk, when there is one for this file; update() checks it against the file."""
+        try:
+            saved = json.loads(self.cache_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return False
+        if not isinstance(saved, dict) or saved.get("version") != TAIL_CACHE_VERSION:
+            return False
+        for name in SAVED_FIELDS:
+            setattr(self, name, saved.get(name))
+        self.pending = bytes(saved.get("pending") or b"")
+        self.turns = saved.get("turns") or []
+        self.saved_offset = self.offset or 0
+        return True
+
+    def save(self) -> None:
+        """Write what was read so far, atomically; the next reader of this file resumes from here."""
+        document = {"version": TAIL_CACHE_VERSION, "pending": list(self.pending), "turns": self.turns}
+        document.update({name: getattr(self, name) for name in SAVED_FIELDS})
+        try:
+            TAIL_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+            temp = self.cache_path.with_suffix(f".tmp{os.getpid()}")
+            temp.write_text(json.dumps(document), encoding="utf-8")
+            temp.replace(self.cache_path)
+            self.saved_offset = self.offset
+        except OSError:
+            return
+
+    @property
     def title(self) -> str:
         """The user's name for the session, else Claude Code's title, else the start of the first message."""
         return self.custom_title or self.ai_title or self.first_user_message[:TITLE_LENGTH].split("\n")[0]
@@ -67,6 +113,7 @@ class TranscriptTail:
         if restarted:
             self.reset()
             self.inode = stat.st_ino
+            self.saved_offset = 0
         if stat.st_size == self.offset:
             return 0 if restarted and self.turns else None
         with open(self.path, "rb") as f:
@@ -82,6 +129,8 @@ class TranscriptTail:
             changed = self.read_line(raw.decode("utf-8", errors="replace"))
             if changed is not None and (first_changed is None or changed < first_changed):
                 first_changed = changed
+        if not self.saved_offset or self.offset - self.saved_offset >= TAIL_SAVE_MIN_BYTES:
+            self.save()
         return 0 if restarted and self.turns else first_changed
 
     def read_line(self, line: str) -> int | None:

@@ -275,6 +275,7 @@ def test_install_registers_the_checkpoint_hook_on_stop_and_precompact(tmp_path, 
 
     hooks = json.loads((tmp_path / ".claude" / "settings.json").read_text())["hooks"]
     commands = {event: [h["command"] for entry in entries for h in entry["hooks"]] for event, entries in hooks.items()}
-    assert commands["Stop"] == ["~/.claude/hooks/synapptic-checkpoint.sh"]
+    # the checkpoint script is on Stop and PreCompact; install registers the harness's own Stop entry next to it
+    assert "~/.claude/hooks/synapptic-checkpoint.sh" in commands["Stop"]
     assert commands["PreCompact"] == ["~/.claude/hooks/synapptic-checkpoint.sh"]
     assert (tmp_path / ".claude" / "hooks" / "synapptic-checkpoint.sh").exists()

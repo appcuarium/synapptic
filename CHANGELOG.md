@@ -26,6 +26,8 @@
 - **Live sessions**: a transcript written in the last 5 minutes and not reported ended pulses lime and leads the strip; new sessions appear before they end.
 - **Profile & guards**: a strip of your projects with a Global card first; for the selected one, your twin (the archetype's picture of you) and the rules that apply there, each with a chart of its last two weeks (shown, of it idle, missed) and an on/off switch; then every change to the rules' words with an undo. The tuning dial sits on Settings.
 - **`synapptic stats` lists your own rules only**: synapptic's built-in rules no longer appear in its numbers.
+- **Faster pages.** The session browser and the guards page keep what they parsed under `~/.synapptic/cache` and read only what a transcript gained since, so a restart no longer re-reads every session (a 1.7 GB session: 3.8 s before, 0.15 s now). The guards page shows the rules at once and fills in their numbers right after.
+- **A rule's reminder after a command or an edit is sent once per ten minutes per session**, not after every one of them: a turn of eight git commands used to put the same text in front of the agent eight times. A prompt that brings a rule up always gets it, and a rule whose reminder is about the file at hand still gets it every time.
 
 ### Fixes
 

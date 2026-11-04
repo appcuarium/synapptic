@@ -398,13 +398,14 @@ def rule_applies_under(where: str, root: str) -> bool:
 
 
 def read_guards() -> dict:
-    """The rules with their numbers over the window and the projects they apply to: {days, events, transcripts,
-    projects: [{project, label, rules}], rules: [guard_view + projects: [slug...] (empty: everywhere)]}."""
+    """The rules and the projects they apply to, without their numbers (those come from guards.numbers, so the
+    page shows the rules at once): {projects: [{project, label, rules}], rules: [guard_view + projects: [slug...]
+    (empty: everywhere)]}."""
     core = harness.require_core()
     export = json.loads(core.harness_export())
-    found = harness.stats(harness.RULE_WINDOW_DAYS)
-    numbers = {rule["id"]: rule for rule in found["rules"]}
-    views = [guard_view(rule, numbers.get(rule["rule"])) for rule in export["rules"]]
+    views = [guard_view(rule, None) for rule in export["rules"]]
+    for view in views:
+        del view["numbers"]
     roots = project_roots()
     for view in views:
         view["projects"] = [slug for slug, root in roots.items() if view["where"] and rule_applies_under(view["where"], root)]
@@ -412,8 +413,15 @@ def read_guards() -> dict:
     for row in read_projects():
         slug = row["project"]
         projects.append({"project": slug, "label": slug, "rules": sum(1 for view in views if slug in view["projects"])})
-    return {"days": found["days"], "events": found["events"], "transcripts": found["transcripts"],
-            "projects": projects, "rules": views}
+    return {"projects": projects, "rules": views}
+
+
+def read_guard_numbers() -> dict:
+    """The rules' numbers over the window, by rule id: {days, events, transcripts, numbers: {id: {fires, idle,
+    misses, chars, sessions, daily}}}. The slow half of the page, asked for after the rules are on screen."""
+    found = harness.stats(harness.RULE_WINDOW_DAYS)
+    numbers = {rule["id"]: {name: rule[name] for name in EMPTY_NUMBERS} for rule in found["rules"]}
+    return {"days": found["days"], "events": found["events"], "transcripts": found["transcripts"], "numbers": numbers}
 
 
 def alternatives(pattern: str) -> list[str]:
@@ -479,6 +487,10 @@ async def guards_list(params: dict, hub: Hub) -> dict:
     return await asyncio.to_thread(guarded, read_guards)
 
 
+async def guards_numbers(params: dict, hub: Hub) -> dict:
+    return await asyncio.to_thread(guarded, read_guard_numbers)
+
+
 async def guards_changes(params: dict, hub: Hub) -> list[dict]:
     return await asyncio.to_thread(guarded, read_changes)
 
@@ -517,6 +529,7 @@ METHODS: dict[str, Method] = {
     "sessions.list": sessions_list,
     "sessions.turns": sessions_turns,
     "guards.list": guards_list,
+    "guards.numbers": guards_numbers,
     "guards.changes": guards_changes,
     "guards.switch": guards_switch,
     "guards.undo": guards_undo,

@@ -17,11 +17,14 @@ import { formatCount } from '@/features/sessions/format';
 import { useWsMutation, useWsQuery } from '@/lib/ws/react';
 import { changeSummary, formatWhen } from './format';
 import { RuleChart } from './RuleChart';
-import type { GuardChange, GuardRow, GuardsList, ProfileView } from './types';
+import type { GuardChange, GuardNumbers, GuardNumbersList, GuardRow, GuardsList, ProfileView } from './types';
 
 // The Settings page's button corners (template tokens for the rest).
 const buttonClasses = 'rounded-xs shadow-none';
 const CHANGES_QUERY = 'guards.changes';
+const DEFAULT_WINDOW_DAYS = 14;
+// a rule the numbers did not mention: nothing happened in the window
+const EMPTY_NUMBERS: GuardNumbers = { fires: 0, idle: 0, misses: 0, chars: 0, sessions: 0, daily: [] };
 // Providers on Settings: the chosen tile at full strength, the others low.
 const SELECTED_TILE_STRENGTH = 1;
 const UNSELECTED_TILE_STRENGTH = 0.15;
@@ -30,6 +33,7 @@ const GLOBAL = '';
 export interface GuardsPageProps<R extends GuardRow> {
   rulesMethod?: string;                     // a method answering in guards.list's shape (default guards.list)
   rulesTopic?: string;                      // the topic that pushes that list (default guards)
+  numbersMethod?: string;                   // the rules' numbers by id (default guards.numbers), asked for after the list
   extras?: (rule: R) => ReactNode;          // more about a rule, shown under its text
   details?: (rule: R) => ReactNode;         // what opens under a rule when asked for
   detailsLabel?: string;                    // the button that opens it (default "Events")
@@ -54,14 +58,20 @@ function RuleBlock<R extends GuardRow>({ rule, days, onSwitch, disabled, extras,
         <p className="text-[13px] text-fg-subtle">{rule.context || rule.message}</p>
       )}
       {extras?.(rule)}
-      <RuleChart id={rule.id} daily={n.daily} days={days} family={rule.family} />
-      {/* the session browser's stats row: one row at every width, smaller cells on phones */}
-      <div className="flex items-start justify-around px-1 sm:px-2 min-h-[52px] overflow-x-auto">
-        <StatCell label="shown" value={formatCount(n.fires)} sub={`${n.sessions} session${n.sessions === 1 ? '' : 's'}`} />
-        <StatCell label="idle" value={formatCount(n.idle)} sub="shown, not needed" />
-        {rule.family && <StatCell label="missed" value={formatCount(n.misses)} sub={rule.anchor ? `not shown for ${rule.anchor}` : 'not shown'} />}
-        <StatCell label="characters" value={formatCount(n.chars)} sub="read by the agent" />
-      </div>
+      {n ? (
+        <>
+          <RuleChart id={rule.id} daily={n.daily} days={days} family={rule.family} />
+          {/* the session browser's stats row: one row at every width, smaller cells on phones */}
+          <div className="flex items-start justify-around px-1 sm:px-2 min-h-[52px] overflow-x-auto">
+            <StatCell label="shown" value={formatCount(n.fires)} sub={`${n.sessions} session${n.sessions === 1 ? '' : 's'}`} />
+            <StatCell label="idle" value={formatCount(n.idle)} sub="shown, not needed" />
+            {rule.family && <StatCell label="missed" value={formatCount(n.misses)} sub={rule.anchor ? `not shown for ${rule.anchor}` : 'not shown'} />}
+            <StatCell label="characters" value={formatCount(n.chars)} sub="read by the agent" />
+          </div>
+        </>
+      ) : (
+        <p className="text-xs text-fg-faint">numbers on their way…</p>
+      )}
       {details && (
         <div className="flex items-start justify-between gap-3">
           <span className="text-xs text-fg-faint">{open ? `${detailsLabel.toLowerCase()} of ${rule.id}, newest first` : ''}</span>
@@ -109,17 +119,20 @@ function ProfileBlock({ profile }: { profile: ProfileView | undefined }) {
 }
 
 export function GuardsPage<R extends GuardRow = GuardRow>({
-  rulesMethod = 'guards.list', rulesTopic = 'guards', extras, details, detailsLabel = 'Events',
+  rulesMethod = 'guards.list', rulesTopic = 'guards', numbersMethod = 'guards.numbers', extras, details, detailsLabel = 'Events',
 }: GuardsPageProps<R>) {
   const [params, setParams] = useSearchParams();
   const project = params.get('project') ?? GLOBAL;
+  // the list first (instant), the numbers after it (the window's transcripts): the page never waits for them
   const guards = useWsQuery<Omit<GuardsList, 'rules'> & { rules: R[] }>(rulesMethod, {}, rulesTopic);
+  const numbers = useWsQuery<GuardNumbersList>(numbersMethod);
   const profile = useWsQuery<ProfileView>('profile.get', { project });
   const changes = useWsQuery<GuardChange[]>(CHANGES_QUERY);
   const queryClient = useQueryClient();
   const refresh = () => {
     queryClient.invalidateQueries({ queryKey: [CHANGES_QUERY] });
     queryClient.invalidateQueries({ queryKey: [rulesMethod] });
+    queryClient.invalidateQueries({ queryKey: [numbersMethod] });
   };
   const switchRule = useWsMutation<GuardsList, { id: string; off: boolean }>('guards.switch', { onSuccess: refresh });
   const undo = useWsMutation<Record<string, unknown>, { id: string }>('guards.undo', { onSuccess: refresh });
@@ -136,17 +149,21 @@ export function GuardsPage<R extends GuardRow = GuardRow>({
   }
 
   const list = guards.data;
-  const shown = list.rules.filter((rule) => appliesTo(rule, project));
+  const counted = numbers.data;
+  const days = counted?.days ?? DEFAULT_WINDOW_DAYS;
+  const shown = list.rules
+    .filter((rule) => appliesTo(rule, project))
+    .map((rule) => ({ ...rule, numbers: counted?.numbers[rule.id] ?? (counted ? EMPTY_NUMBERS : undefined) }));
   const busy = switchRule.isPending || undo.isPending;
-  const failure = switchRule.error ?? undo.error ?? changes.error ?? profile.error;
+  const failure = switchRule.error ?? undo.error ?? changes.error ?? profile.error ?? numbers.error;
   const card = list.projects.find((p) => p.project === project);
   const label = card?.label ?? project;
   return (
     <section className="flex flex-col">
       <PageHeader title="Profile & guards">
         <span className="text-[13px] text-fg-subtle truncate hidden sm:inline">
-          {list.rules.length} rule{list.rules.length === 1 ? '' : 's'}, last {list.days} days:{' '}
-          <span className="text-fg-muted">{list.events} shown across {list.transcripts} sessions</span>
+          {list.rules.length} rule{list.rules.length === 1 ? '' : 's'}, last {days} days:{' '}
+          <span className="text-fg-muted">{counted ? `${counted.events} shown across ${counted.transcripts} sessions` : 'counting…'}</span>
         </span>
       </PageHeader>
 
@@ -182,7 +199,7 @@ export function GuardsPage<R extends GuardRow = GuardRow>({
           <p className="bg-page p-4 text-sm text-fg-subtle gutter">No rules here yet. `synapptic guards add` writes one; `synapptic ingest` learns them.</p>
         )}
         {shown.map((rule) => (
-          <RuleBlock key={rule.id} rule={rule} days={list.days} disabled={busy}
+          <RuleBlock key={rule.id} rule={rule} days={days} disabled={busy}
             extras={extras} details={details} detailsLabel={detailsLabel}
             onSwitch={(off) => switchRule.mutate({ id: rule.id, off })} />
         ))}

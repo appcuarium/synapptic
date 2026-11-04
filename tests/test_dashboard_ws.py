@@ -91,8 +91,8 @@ def test_the_guards_methods_say_when_the_core_is_missing(client, monkeypatch):
     monkeypatch.setattr("synapptic.core.core", None)
     with client.websocket_connect("/api/ws") as ws:
         ws.receive_json()
-        for method, params in (("guards.list", {}), ("guards.changes", {}), ("guards.switch", {"id": "r", "off": True}),
-                               ("guards.undo", {"id": "v1"})):
+        for method, params in (("guards.list", {}), ("guards.numbers", {}), ("guards.changes", {}),
+                               ("guards.switch", {"id": "r", "off": True}), ("guards.undo", {"id": "v1"})):
             reply = request(ws, "r8", method, params)
             assert reply["code"] == "invalid_params" and "synapptic-core package is not installed" in reply["message"], method
         assert request(ws, "r9", "guards.switch", {"id": "r"})["code"] == "invalid_params"   # off is required
