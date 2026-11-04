@@ -1,12 +1,14 @@
 """SQLite index of Claude Code sessions (~/.synapptic/sessions.db): one row per transcript, its search entry,
 and the sessions the SessionEnd hook reported ended. Everything here is rebuilt by `synapptic index --full`."""
 
+import json
 import sqlite3
 import time
 from datetime import datetime, timezone
 from pathlib import Path
 
 from synapptic.config import SYNAPPTIC_DIR
+from synapptic.integrate import resolve_project_root
 
 DB_PATH = SYNAPPTIC_DIR / "sessions.db"
 
@@ -167,3 +169,42 @@ class SessionStore:
         """Load all previously ended session IDs from the DB."""
         rows = self._conn.execute("SELECT session_id FROM ended_sessions").fetchall()
         return {r[0] for r in rows}
+
+
+TRANSCRIPT_HEAD_LINES = 50   # a transcript's cwd is in its first records
+
+
+def transcript_cwd(path: str) -> str:
+    """The working directory the session ran in, from its first records (a path with spaces cannot be read back
+    from Claude Code's directory name, the transcript's own cwd can)."""
+    try:
+        with open(path, encoding="utf-8", errors="replace") as lines:
+            for _, line in zip(range(TRANSCRIPT_HEAD_LINES), lines):
+                try:
+                    record = json.loads(line)
+                except ValueError:
+                    continue
+                cwd = record.get("cwd") if isinstance(record, dict) else None
+                if cwd:
+                    return str(cwd)
+    except OSError:
+        pass
+    return ""
+
+
+def project_roots(db_path: Path = DB_PATH) -> dict[str, str]:
+    """Each indexed project's directory on disk, by slug: decoded from Claude Code's directory name, else read
+    from the latest transcript's cwd; projects with neither are left out."""
+    store = SessionStore(db_path)
+    store.init_db()
+    try:
+        dirs = store.get_project_dirs()
+    finally:
+        store.close()
+    roots = {}
+    for slug, (project_dir, file_path) in dirs.items():
+        root = resolve_project_root(project_dir)
+        found = str(root) if root is not None else transcript_cwd(file_path)
+        if found:
+            roots[slug] = found
+    return roots

@@ -1,6 +1,8 @@
 """The dashboard websocket at /api/ws: protocol, config methods, pushes, origin check, and the SPA routes."""
 
 import json
+import sys
+import time
 
 import pytest
 import yaml
@@ -122,6 +124,26 @@ def test_a_change_is_shown_as_counts_never_as_the_words():
     assert shown["added"] == 2 and shown["removed"] == 0
     assert shown["kind"] == "promoted" and "before" not in shown and "after" not in shown
     assert change_view({**change, "before": "a|b|c", "after": "a"})["removed"] == 2
+
+
+def test_the_restart_button_spawns_the_servers_own_restart_command(client, tmp_path, monkeypatch):
+    from synapptic.dashboard import handlers
+
+    marker = tmp_path / "restarted"
+    # boundary: process - the server's restart command (`synapptic dashboard restart`) would stop this very
+    # process; a command that leaves a marker stands in for it, spawned the same detached way
+    monkeypatch.setitem(handlers.RESTART, "command", [sys.executable, "-c", f"open({str(marker)!r}, 'w').write('x')"])
+    monkeypatch.setitem(handlers.RESTART, "log", str(tmp_path / "log"))
+    with client.websocket_connect("/api/ws") as ws:
+        ws.receive_json()
+        assert request(ws, "s1", "server.restart")["result"] == {"restarting": True}
+        deadline = time.time() + 5
+        while time.time() < deadline and not marker.exists():
+            time.sleep(0.1)
+        assert marker.exists()
+        monkeypatch.setitem(handlers.RESTART, "command", None)
+        reply = request(ws, "s2", "server.restart")
+    assert reply["code"] == "invalid_params" and "restart it where it runs" in reply["message"]
 
 
 def test_a_socket_from_another_website_is_refused(client):

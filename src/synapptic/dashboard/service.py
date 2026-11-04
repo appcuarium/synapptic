@@ -96,6 +96,12 @@ def serve_command(host: str, port: int) -> list[str]:
     return [sys.executable, "-c", "from synapptic.cli import cli; cli()", "dashboard", "serve", "--host", host, "--port", str(port)]
 
 
+def restart_command(host: str, port: int) -> list[str]:
+    """`synapptic dashboard restart` for this server, as the page's restart button spawns it (detached, so it
+    outlives the server it stops)."""
+    return [sys.executable, "-c", "from synapptic.cli import cli; cli()", "dashboard", "restart", "--host", host, "--port", str(port)]
+
+
 def spawn_detached(command: list[str], log: Path) -> subprocess.Popen:
     log.parent.mkdir(parents=True, exist_ok=True)
     with open(log, "ab") as output:

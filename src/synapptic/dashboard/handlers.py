@@ -17,20 +17,20 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from synapptic import harness, providers
 from synapptic.config import CLAUDE_PROJECTS_DIR
+from synapptic.dashboard import service
 from synapptic.dashboard.hub import Hub
 from synapptic.dashboard.protocol import ErrorCode
-from synapptic.integrate import integrate_archetypes, resolve_project_root, rules_enabled, withdraw_rules
+from synapptic.integrate import integrate_archetypes, rules_enabled, withdraw_rules
 from synapptic.sessions.indexer import tail_metadata
 from synapptic.scrub import scrub_text
 from synapptic.sessions.parse import SHOWN_BLOCK_TYPES, compute_session_stats
-from synapptic.sessions.store import DB_PATH, SessionStore
+from synapptic.sessions.store import DB_PATH, SessionStore, project_roots as indexed_project_roots
 from synapptic.sessions.tail import TranscriptTail
 from synapptic.state import include_headless_sessions, is_excluded_transcript, load_archetype, load_profile, slug_from_project_dir
 
 CONFIG_TOPIC = "config"
 GUARDS_TOPIC = "guards"
 GUARD_CHANGES_SHOWN = 20
-TRANSCRIPT_HEAD_LINES = 50   # a transcript's cwd is in its first records
 API_KEY_HINT_LENGTH = 4
 SESSION_PAGE_SIZE = 100
 SESSION_PAGE_MAX = 500
@@ -355,39 +355,9 @@ def guard_view(rule: dict, numbers: dict | None) -> dict:
     }
 
 
-def transcript_cwd(path: str) -> str:
-    """The working directory the session ran in, from its first records (a path with spaces cannot be read back
-    from Claude Code's directory name, the transcript's own cwd can)."""
-    try:
-        with open(path, encoding="utf-8", errors="replace") as lines:
-            for _, line in zip(range(TRANSCRIPT_HEAD_LINES), lines):
-                try:
-                    record = json.loads(line)
-                except ValueError:
-                    continue
-                cwd = record.get("cwd") if isinstance(record, dict) else None
-                if cwd:
-                    return str(cwd)
-    except OSError:
-        pass
-    return ""
-
-
 def project_roots() -> dict[str, str]:
-    """Each indexed project's directory on disk, by slug: decoded from Claude Code's directory name, else read
-    from the latest transcript's cwd; projects with neither are left out."""
-    store = open_index()
-    try:
-        dirs = store.get_project_dirs()
-    finally:
-        store.close()
-    roots = {}
-    for slug, (project_dir, file_path) in dirs.items():
-        root = resolve_project_root(project_dir)
-        found = str(root) if root is not None else transcript_cwd(file_path)
-        if found:
-            roots[slug] = found
-    return roots
+    """Each indexed project's directory on disk, by slug (the index's lookup, on this module's index path)."""
+    return indexed_project_roots(DB_PATH)
 
 
 def rule_applies_under(where: str, root: str) -> bool:
@@ -505,6 +475,25 @@ async def profile_get(params: dict, hub: Hub) -> dict:
     return await asyncio.to_thread(read_profile, query.project)
 
 
+# ----- the server itself ------------------------------------------------------------------------------
+# The page's restart button: the command that restarts this server where it runs, set by the command that
+# started it (`synapptic dashboard serve`, or another dashboard's), spawned detached so it outlives the
+# server it stops. The page polls /api/health and reloads when the server is back.
+
+RESTART: dict = {"command": None, "log": None}
+
+
+def spawn_restart() -> dict:
+    if not RESTART["command"]:
+        raise MethodError(ErrorCode.INVALID_PARAMS, "this server was not started by a synapptic command; restart it where it runs")
+    service.spawn_detached(RESTART["command"], Path(RESTART["log"]))
+    return {"restarting": True}
+
+
+async def server_restart(params: dict, hub: Hub) -> dict:
+    return await asyncio.to_thread(spawn_restart)
+
+
 async def guards_switch(params: dict, hub: Hub) -> dict:
     query = validated(GuardSwitchParams, params)
     await asyncio.to_thread(guarded, harness.switch_rule, query.id, query.off)
@@ -534,4 +523,5 @@ METHODS: dict[str, Method] = {
     "guards.switch": guards_switch,
     "guards.undo": guards_undo,
     "profile.get": profile_get,
+    "server.restart": server_restart,
 }

@@ -10,6 +10,7 @@ import { type ReactNode, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { PageHeader } from '@/components/layout/PageHeader';
 import { ToggleRow } from '@/components/machine/OnOffToggle';
+import { TileLabel } from '@/components/machine/TileLabel';
 import { TileStrip } from '@/components/machine/TileStrip';
 import { Button } from '@/components/ui/button';
 import { StatCell } from '@/features/sessions/SessionsPage';
@@ -29,6 +30,7 @@ const EMPTY_NUMBERS: GuardNumbers = { fires: 0, idle: 0, misses: 0, chars: 0, se
 const SELECTED_TILE_STRENGTH = 1;
 const UNSELECTED_TILE_STRENGTH = 0.15;
 const GLOBAL = '';
+const ALL = '__all__';   // the strip's All card: every rule on one page (operator, 2026-11-04)
 
 export interface GuardsPageProps<R extends GuardRow> {
   rulesMethod?: string;                     // a method answering in guards.list's shape (default guards.list)
@@ -40,7 +42,12 @@ export interface GuardsPageProps<R extends GuardRow> {
 }
 
 function appliesTo(rule: GuardRow, project: string): boolean {
+  if (project === ALL) return true;
   return project === GLOBAL ? rule.projects.length === 0 && !rule.where : rule.projects.includes(project);
+}
+
+function scopeOf(rule: GuardRow): string {
+  return rule.where ? `under ${rule.where}` : 'everywhere';
 }
 
 function RuleBlock<R extends GuardRow>({ rule, days, onSwitch, disabled, extras, details, detailsLabel }: {
@@ -51,8 +58,7 @@ function RuleBlock<R extends GuardRow>({ rule, days, onSwitch, disabled, extras,
   const n = rule.numbers;
   return (
     <div className="bg-page flex flex-col gap-3 px-4 py-4">
-      <ToggleRow id={`guard-${rule.id}`} label={rule.id}
-        description={rule.where ? `under ${rule.where}` : 'everywhere'}
+      <ToggleRow id={`guard-${rule.id}`} label={<TileLabel>{rule.id}</TileLabel>} note={scopeOf(rule)} description={scopeOf(rule)}
         on={!rule.off} onChange={(on) => onSwitch(!on)} disabled={disabled || Boolean(rule.core)} />
       {(rule.context || rule.message) && (
         <p className="text-[13px] text-fg-subtle">{rule.context || rule.message}</p>
@@ -139,13 +145,13 @@ export function GuardsPage<R extends GuardRow = GuardRow>({
 
   if (guards.error) {
     return (
-      <PageHeader title="Profile & guards">
+      <PageHeader title="Profile & Guards">
         <span className="text-[13px] text-fg-subtle">Could not load the guards: {guards.error.message}</span>
       </PageHeader>
     );
   }
   if (!guards.data) {
-    return <PageHeader title="Profile & guards"><span className="text-[13px] text-fg-subtle">Loading…</span></PageHeader>;
+    return <PageHeader title="Profile & Guards"><span className="text-[13px] text-fg-subtle">Loading…</span></PageHeader>;
   }
 
   const list = guards.data;
@@ -160,7 +166,7 @@ export function GuardsPage<R extends GuardRow = GuardRow>({
   const label = card?.label ?? project;
   return (
     <section className="flex flex-col">
-      <PageHeader title="Profile & guards">
+      <PageHeader title="Profile & Guards">
         <span className="text-[13px] text-fg-subtle truncate hidden sm:inline">
           {list.rules.length} rule{list.rules.length === 1 ? '' : 's'}, last {days} days:{' '}
           <span className="text-fg-muted">{counted ? `${counted.events} shown across ${counted.transcripts} sessions` : 'counting…'}</span>
@@ -170,15 +176,20 @@ export function GuardsPage<R extends GuardRow = GuardRow>({
       <TileStrip label="Projects" selectedId={project}
         statusLeft={<span>{list.projects.length - 1} projects</span>}
         onSelect={(id: string) => setParams(id === GLOBAL ? {} : { project: id })}
-        tiles={list.projects.map((p) => ({
-          id: p.project,
-          name: `${p.rules} rule${p.rules === 1 ? '' : 's'}`,
-          value: p.label,
-          sub: p.sub ?? (p.project === GLOBAL ? 'applies everywhere' : p.project),
-          strength: p.project === project ? SELECTED_TILE_STRENGTH : UNSELECTED_TILE_STRENGTH,
-        }))} />
+        tiles={[
+          // the All card first: every rule, whatever it applies to
+          { id: ALL, name: `${list.rules.length} rule${list.rules.length === 1 ? '' : 's'}`, value: 'All', sub: 'every rule',
+            strength: project === ALL ? SELECTED_TILE_STRENGTH : UNSELECTED_TILE_STRENGTH },
+          ...list.projects.map((p) => ({
+            id: p.project,
+            name: `${p.rules} rule${p.rules === 1 ? '' : 's'}`,
+            value: p.label,
+            sub: p.sub ?? (p.project === GLOBAL ? 'applies everywhere' : p.project),
+            strength: p.project === project ? SELECTED_TILE_STRENGTH : UNSELECTED_TILE_STRENGTH,
+          })),
+        ]} />
 
-      {card?.twin !== false && (
+      {project !== ALL && card?.twin !== false && (
         <>
           <PageHeader title={project === GLOBAL ? 'Your twin' : `Your twin in ${label}`}>
             <span className="text-[13px] text-fg-subtle truncate hidden sm:inline">how you work, built from your sessions</span>
@@ -189,7 +200,7 @@ export function GuardsPage<R extends GuardRow = GuardRow>({
         </>
       )}
 
-      <PageHeader title={project === GLOBAL ? 'Guards everywhere' : `Guards in ${label}`}>
+      <PageHeader title={project === ALL ? 'All guards' : project === GLOBAL ? 'Guards everywhere' : `Guards in ${label}`}>
         <span className="text-[13px] text-fg-subtle truncate hidden sm:inline">
           {shown.length} rule{shown.length === 1 ? '' : 's'}
         </span>

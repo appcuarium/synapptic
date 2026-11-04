@@ -3,6 +3,7 @@
 // dividers; the selected tile is raised with a teal top edge and scrolled to the centre. Classes and sizes
 // are those measured against Machine for the mockup's session strip.
 import { type ReactNode, useCallback, useEffect, useRef } from 'react';
+import { Described } from '@/components/machine/Described';
 import { cn } from '@/lib/cn';
 import { useResolvedTheme } from '@/lib/theme';
 import { tileBackground } from '@/lib/tileColor';
@@ -93,12 +94,16 @@ export function TileStrip({ tiles, selectedId, onSelect, statusLeft, statusRight
         <div className="flex items-center gap-3 ml-auto flex-shrink-0">
           {statusRight}
           <div className="flex items-center gap-0.5">
-            <button type="button" aria-label="Scroll left" className={chevronClasses} onClick={() => scrollBy(-1)}>
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true"><path d="M15 18l-6-6 6-6" /></svg>
-            </button>
-            <button type="button" aria-label="Scroll right" className={chevronClasses} onClick={() => scrollBy(1)}>
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true"><path d="M9 18l6-6-6-6" /></svg>
-            </button>
+            <Described hint="Scroll left">
+              <button type="button" aria-label="Scroll left" className={chevronClasses} onClick={() => scrollBy(-1)}>
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true"><path d="M15 18l-6-6 6-6" /></svg>
+              </button>
+            </Described>
+            <Described hint="Scroll right">
+              <button type="button" aria-label="Scroll right" className={chevronClasses} onClick={() => scrollBy(1)}>
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true"><path d="M9 18l6-6-6-6" /></svg>
+              </button>
+            </Described>
           </div>
         </div>
       </div>
@@ -109,7 +114,8 @@ export function TileStrip({ tiles, selectedId, onSelect, statusLeft, statusRight
             return (
               <div key={tile.id} data-tile-id={tile.id}
                 className="grow shrink-0 min-w-[120px] h-[70px] border-r border-tile-divider p-0 overflow-hidden">
-                <button type="button" role="radio" aria-checked={selected} title={tile.title ?? tile.name}
+                <Described hint={`${tile.title ?? tile.name}${tile.live ? ' · live' : ''}`} side="bottom">
+                <button type="button" role="radio" aria-checked={selected}
                   onClick={() => { if (!wasDragged()) onSelect(tile.id); }}
                   className={cn(
                     'strategy-tile flex flex-col items-center justify-evenly w-full h-full transition-all duration-150 cursor-pointer border-t-2 focus:outline-hidden relative',
@@ -124,12 +130,13 @@ export function TileStrip({ tiles, selectedId, onSelect, statusLeft, statusRight
                   )}
                   // live: the same lime for every live session, pulsing (animate-live), not shaded by length
                   style={tile.live ? undefined : { backgroundColor: tileBackground(0, tile.strength) }}>
-                  {tile.live && <span className="absolute top-1.5 left-1.5 size-1.5 rounded-full bg-lime-300" title="live" />}
+                  {tile.live && <span className="absolute top-1.5 left-1.5 size-1.5 rounded-full bg-lime-300" aria-hidden="true" />}
                   {/* text follows the tile's hue (Machine: <hue>-100 value, <hue>-100/80 name and id) */}
                   <span className={cn('relative text-[11px] truncate w-full text-center px-1 leading-tight', tile.live ? 'text-lime-100/80' : 'text-tile-fg/80')}>{tile.name}</span>
                   <span className={cn('relative text-lg font-bold leading-snug', tile.live ? 'text-lime-100' : 'text-tile-fg')}>{tile.value}</span>
                   <span className={cn('relative text-[10px] leading-tight', tile.live ? 'text-lime-100/80' : 'text-tile-fg/80')}>{tile.sub}</span>
                 </button>
+                </Described>
               </div>
             );
           })}

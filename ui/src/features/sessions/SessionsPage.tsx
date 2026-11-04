@@ -5,6 +5,7 @@ import { useInfiniteQuery, useQuery } from '@tanstack/react-query';
 import { useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { PageHeader } from '@/components/layout/PageHeader';
+import { Described } from '@/components/machine/Described';
 import { fieldClasses } from '@/components/machine/field';
 import { TileStrip } from '@/components/machine/TileStrip';
 import { Button } from '@/components/ui/button';
@@ -41,13 +42,15 @@ function matches(session: SessionRow, query: string): boolean {
   return haystack.toLowerCase().includes(query);
 }
 
+// A stat with its description (`sub`) as a tooltip over the cell.
 export function StatCell({ label, value, sub }: { label: string; value: string; sub: string }) {
   return (
-    <div className="flex min-h-[68px] shrink-0 flex-col items-center justify-start px-1 sm:px-3 py-2">
-      <span className="whitespace-nowrap text-center text-[8px] sm:text-[10px] text-fg-subtle uppercase tracking-wide mb-0.5">{label}</span>
-      <span className="whitespace-nowrap text-center text-[13px] sm:text-lg font-medium text-primary">{value}</span>
-      <span className="whitespace-nowrap text-center text-[8px] sm:text-[10px] text-fg-subtle">{sub}</span>
-    </div>
+    <Described hint={sub}>
+      <div className="flex min-h-[52px] shrink-0 flex-col items-center justify-start px-1 sm:px-3 py-2">
+        <span className="whitespace-nowrap text-center text-[8px] sm:text-[10px] text-fg-subtle uppercase tracking-wide mb-0.5">{label}</span>
+        <span className="whitespace-nowrap text-center text-[13px] sm:text-lg font-medium text-primary">{value}</span>
+      </div>
+    </Described>
   );
 }
 

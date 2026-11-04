@@ -23,8 +23,8 @@ from synapptic.pipeline import (
     submit_checkpoint_batch,
 )
 from synapptic.sessions.indexer import index_all_sessions
-from synapptic.sessions.store import DB_PATH as SESSIONS_DB_PATH, SessionStore
-from synapptic.synthesize import synthesize_archetype
+from synapptic.sessions.store import DB_PATH as SESSIONS_DB_PATH, SessionStore, project_roots
+from synapptic.synthesize import synthesize_profile
 from synapptic.state import (
     archetype_age_hours,
     ensure_dirs,
@@ -659,8 +659,8 @@ def echo_rebuilt(changed: list[str | None]):
 @click.option("--project", "-p", help="Synthesize only this project")
 @click.option("--target-model", default=None, help="Filter guards by benchmark verdicts for this model (e.g. gemini-2.0-flash)")
 def synthesize(model, project, target_model):
-    """Generate narrative archetypes from profiles (Tier 3)."""
-    from synapptic.synthesize import synthesize_archetype as do_synthesize
+    """Generate the twin and the guards from the profiles (Tier 3): the twin is the archetype, the guards
+    become the rules your agent runs on."""
     from synapptic.providers import load_config
 
     llm_config = load_config()
@@ -674,11 +674,7 @@ def synthesize(model, project, target_model):
     gp = load_profile(project_slug=None)
     if gp.get("dimensions"):
         click.echo("Synthesizing global archetype...")
-        narrative = do_synthesize(gp, config=llm_config, target_model=target_model)
-        if narrative:
-            save_archetype(narrative, project_slug=None)
-            click.echo(f"  Global archetype: {len(narrative)} chars")
-        else:
+        if not synthesize_and_sync(gp, None, llm_config, target_model):
             click.echo("  Global: skipped (see message above)")
 
     # Per-project
@@ -688,11 +684,7 @@ def synthesize(model, project, target_model):
         if not pp.get("dimensions"):
             continue
         click.echo(f"Synthesizing [{slug}] archetype...")
-        narrative = do_synthesize(pp, config=llm_config, target_model=target_model)
-        if narrative:
-            save_archetype(narrative, project_slug=slug)
-            click.echo(f"  [{slug}]: {len(narrative)} chars")
-        else:
+        if not synthesize_and_sync(pp, slug, llm_config, target_model):
             click.echo(f"  [{slug}]: skipped (see message above)")
 
 
@@ -1079,6 +1071,34 @@ def echo_rule_changes(limit):
         click.echo(f"      {change['field']}: /{change['before']}/ -> /{change['after']}/")
 
 
+def synthesize_and_sync(profile, slug, llm_config, target_model=None):
+    """One synthesis for a scope (a project slug, or None for everywhere): the twin is saved as the archetype,
+    the guards become rules in the harness store for that scope. Returns the twin, or None when nothing was
+    written. Says what the rules did; a harness failure is reported and never stops the pipeline."""
+    root = project_roots().get(slug) if slug else None
+    try:
+        existing = harness.synthesized_rules(root)
+    except harness.HarnessError:
+        existing = []
+    parts = synthesize_profile(profile, config=llm_config, target_model=target_model, existing_rules=existing)
+    if not parts:
+        return None
+    save_archetype(parts["twin"], project_slug=slug)
+    label = f"[{slug}]" if slug else "Global"
+    click.echo(f"  {label} twin: {len(parts['twin'])} chars")
+    if slug and root is None:
+        click.echo(f"  {label} guards: no project directory known for the scope; rules not written")
+        return parts["twin"]
+    try:
+        done = harness.sync_rules(parts["rules"], root)
+    except harness.HarnessError as exc:
+        click.echo(f"  {label} guards: skipped: {exc}")
+        return parts["twin"]
+    click.echo(f"  {label} guards: {len(done['added'])} rule(s) added, {len(done['updated'])} updated, "
+               f"{len(done['kept'])} kept as yours, {len(done['skipped'])} skipped")
+    return parts["twin"]
+
+
 def run_learning(transcripts, days):
     """The learning step of ingest: mine the sessions just processed for the refusals that got no card first,
     then one tuning pass over the window. Says what it found; never raises past the pipeline."""
@@ -1290,7 +1310,6 @@ def run_ingest(model, max_tokens, project, min_lines, limit):
     from synapptic.filter import filter_transcript
     from synapptic.extract import try_extract_observations
     from synapptic.profile import route_observations
-    from synapptic.synthesize import synthesize_archetype as do_synthesize
     from synapptic.integrate import integrate_archetypes
     from synapptic.providers import load_config
 
@@ -1373,24 +1392,18 @@ def run_ingest(model, max_tokens, project, min_lines, limit):
     click.echo(f"\nStep 2: Merging")
     echo_rebuilt(rebuild_profiles())
 
-    # Step 4: Synthesize
+    # Step 4: Synthesize (the twin as the archetype, the guards as rules)
     click.echo("\nStep 3: Synthesizing")
     gp = load_profile(project_slug=None)
     if gp.get("dimensions"):
-        narrative = do_synthesize(gp, config=llm_config)
-        if narrative:
-            save_archetype(narrative, project_slug=None)
-            click.echo(f"  Global: {len(narrative)} chars")
+        synthesize_and_sync(gp, None, llm_config)
 
     slugs = [project] if project else list_projects()
     for slug in slugs:
         pp = load_profile(project_slug=slug)
         if not pp.get("dimensions"):
             continue
-        narrative = do_synthesize(pp, config=llm_config)
-        if narrative:
-            save_archetype(narrative, project_slug=slug)
-            click.echo(f"  [{slug}]: {len(narrative)} chars")
+        synthesize_and_sync(pp, slug, llm_config)
 
     # Step 5: Integrate
     click.echo("\nStep 4: Integrating")
@@ -1514,10 +1527,7 @@ def checkpoint(session, flush, min_tokens, max_tokens, synthesize_after):
     due = [label for label in changed if label in (None, slug)
            and synthesize_after >= 0 and archetype_age_hours(label) >= synthesize_after]
     for label in due:
-        narrative = synthesize_archetype(load_profile(project_slug=label), config=llm_config)
-        if narrative:
-            save_archetype(narrative, project_slug=label)
-            click.echo(f"  {'[' + label + ']' if label else 'Global'} archetype: {len(narrative)} chars")
+        synthesize_and_sync(load_profile(project_slug=label), label, llm_config)
     if due:
         for entry in integrate_archetypes(project_slugs=[slug]):
             click.echo(f"  [{entry[0]}] → {entry[1]}: {entry[2]}")
@@ -1983,9 +1993,12 @@ def dashboard_command(action, host, port):
     if not check_dashboard_deps():
         return
     import uvicorn
+    from synapptic.dashboard import handlers
     from synapptic.dashboard.app import STATIC_DIR, create_app
     if not (STATIC_DIR / "index.html").exists():
         click.echo("The dashboard UI is not built. Run: npm --prefix ui install && npm --prefix ui run build", err=True)
+    # the page's restart button restarts this server through the same command that manages it
+    handlers.RESTART.update(command=dashboard_service.restart_command(host, port), log=str(dashboard_service.LOG_FILE))
     click.echo(f"Dashboard: http://{host}:{port}/")
     uvicorn.run(create_app(), host=host, port=port, log_level="info")
 

@@ -1,7 +1,8 @@
-"""Tier 3: the narrative archetype the configured model writes from the weighted profile.
+"""Tier 3: what the configured model writes from the weighted profile: the user's twin (the narrative every
+session starts with) and the guards as rules for the harness.
 
-Which observations qualify and what the model is asked live in the synapptic-core package; this module
-serialises the profile, calls the model and returns the document.
+Which observations qualify, what the model is asked and how its reply is split live in the synapptic-core
+package; this module serialises the profile, calls the model and hands the two parts back.
 """
 
 import json
@@ -13,8 +14,10 @@ from synapptic.core import require_core
 from synapptic.providers import call_llm
 
 
-def synthesize_archetype(profile: dict, model: str = "sonnet", config: dict | None = None, target_model: str | None = None) -> str | None:
-    """The archetype document for a profile, or None when nothing qualifies or the model call failed.
+def synthesize_profile(profile: dict, config: dict | None = None, target_model: str | None = None,
+                       existing_rules: list[dict] | None = None) -> dict | None:
+    """{"twin": the narrative, "rules": [{id, text, phrases, files}]} for a profile, or None when nothing
+    qualifies or the model call failed. `existing_rules` ({id, text}) lets the model keep a rule's id.
 
     target_model: if set, guards marked redundant/backfire for this model are left out.
     """
@@ -30,10 +33,18 @@ def synthesize_archetype(profile: dict, model: str = "sonnet", config: dict | No
         return None
 
     profile_yaml = yaml.dump(filtered_profile, default_flow_style=False, sort_keys=False, allow_unicode=True)
-    narrative = call_llm(require_core().synthesis_prompt(profile_yaml), config=config)
-    if not narrative:
+    existing = json.dumps(existing_rules or [], ensure_ascii=False)
+    reply = call_llm(require_core().synthesis_prompt(profile_yaml, existing), config=config)
+    if not reply:
         return None
-    return require_core().strip_fences(narrative)
+    parts = json.loads(require_core().synthesis_parts(reply))
+    return parts if parts.get("twin") else None
+
+
+def synthesize_archetype(profile: dict, model: str = "sonnet", config: dict | None = None, target_model: str | None = None) -> str | None:
+    """The twin alone, for callers that only write the archetype."""
+    parts = synthesize_profile(profile, config=config, target_model=target_model)
+    return parts["twin"] if parts else None
 
 
 def filter_for_narrative(profile: dict, target_model: str | None = None) -> dict:

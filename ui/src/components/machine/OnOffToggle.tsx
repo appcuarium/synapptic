@@ -1,5 +1,7 @@
 // Machine's on/off pill (Strategy Analytics settings): shadcn's Toggle (Radix) with Machine's classes on
 // top, exactly as machine-fe styles it. Translated to Tailwind 4 (rounded -> rounded-sm) and our roles.
+import type { ReactNode } from 'react';
+import { Described } from '@/components/machine/Described';
 import { Toggle } from '@/components/ui/toggle';
 import { cn } from '@/lib/cn';
 
@@ -27,20 +29,24 @@ export function OnOffToggle({ on, onChange, labelledBy, disabled, className }: {
   );
 }
 
-// A labelled setting with its toggle at the right (the mockup's Message Batches row).
-export function ToggleRow({ id, label, description, on, onChange, disabled }: {
+// A labelled setting with its toggle at the right (the mockup's Message Batches row); the description is
+// a tooltip over the label. A label that is not plain text (a guard's name as a TileLabel) is passed as is.
+export function ToggleRow({ id, label, description, note, on, onChange, disabled }: {
   id: string;
-  label: string;
+  label: ReactNode;
   description: string;
+  note?: string;           // a line under the label that stays visible (a guard's scope: operator 2026-11-04)
   on: boolean;
   onChange: (on: boolean) => void;
   disabled?: boolean;
 }) {
   return (
-    <div className="flex items-start justify-between gap-3">
+    <div className="flex items-center justify-between gap-3">
       <div className="min-w-0">
-        <div className="text-[13px] text-fg-muted font-medium" id={id}>{label}</div>
-        <div className="text-xs text-fg-faint truncate">{description}</div>
+        <Described hint={description}>
+          <div className="min-w-0 truncate text-[13px] text-fg-muted font-medium" id={id}>{label}</div>
+        </Described>
+        {note && <div className="text-xs text-fg-faint truncate">{note}</div>}
       </div>
       <OnOffToggle on={on} onChange={onChange} labelledBy={id} disabled={disabled} />
     </div>

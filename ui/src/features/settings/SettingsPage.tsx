@@ -4,7 +4,7 @@
 // Built on shadcn (Button, Input, Label, Select, Toggle) with the mockup's classes on top.
 import { useEffect, useState } from 'react';
 import { PageHeader } from '@/components/layout/PageHeader';
-import { fieldClasses } from '@/components/machine/field';
+import { fieldClasses, labelClasses } from '@/components/machine/field';
 import { ToggleRow } from '@/components/machine/OnOffToggle';
 import { TileStrip } from '@/components/machine/TileStrip';
 import { Button } from '@/components/ui/button';
@@ -17,7 +17,6 @@ import { TUNING_LEVELS, type ConfigPatch, type DashboardConfig, type ProviderInf
 
 // Colours, weight and touch height come from the Button variants (template tokens); only the mockup's 2px corners here.
 const buttonClasses = 'rounded-xs shadow-none';
-const labelClasses = 'text-sm leading-5 font-normal text-primary';
 // Providers have no metric to grade by, so strength marks the selection: the chosen provider at full
 // strength, the others low (a top edge and a 2% scale alone are not enough to read which one is chosen).
 const SELECTED_TILE_STRENGTH = 1;

@@ -62,7 +62,9 @@ Everything you may want to read, verify or change stays open under the MIT licen
 
 ## What it builds
 
-After analyzing your sessions, **synapptic** produces a living document with three sections:
+After analyzing your sessions, **synapptic** produces two things.
+
+Your twin, a living document that loads at session start:
 
 ```markdown
 ## User Archetype
@@ -70,22 +72,18 @@ After analyzing your sessions, **synapptic** produces a living document with thr
 You are working with a senior full-stack engineer who expects execution,
 not explanation. Terse commands, no pleasantries. Read diffs, don't
 summarize them.
-
-## Guards
-
-1. NEVER commit without running tests first
-2. BEFORE implementing a new service, read an existing one of the same type
-3. WHEN the user specifies a verification path, treat it as a hard constraint
-4. NEVER write a post-implementation summary
-
-## Known Weaknesses
-
-- Confident claims without evidence
-- Scope creep on focused fixes
-- Planning theater ("let me plan this" for implementation tasks)
 ```
 
-This loads automatically at session start. Your AI already knows the rules before you type a word.
+And your guards, which do not travel as text. They become the rules your agent runs on, scoped to the project they came from or to everything you do, and the harness brings each one up when a request calls for it:
+
+```
+NEVER commit without running tests first
+BEFORE implementing a new service, read an existing one of the same type
+WHEN the user specifies a verification path, treat it as a hard constraint
+NEVER write a post-implementation summary
+```
+
+`synapptic guards` lists them. Your AI knows who you are before you type a word, and is told the rule that matters at the moment it matters.
 
 ## Works with everything
 

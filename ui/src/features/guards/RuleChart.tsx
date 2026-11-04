@@ -3,6 +3,7 @@
 // Inline SVG with no chart library: thin bars with rounded ends on the baseline, a 2px gap between fills,
 // a legend naming every series, a tooltip per bar, and the same numbers as a table for screen readers.
 // Palette (validated for both surfaces with the dataviz validator): teal #0d9488 shown, rose #f43f5e missed.
+import { Described } from '@/components/machine/Described';
 import { dailySeries, dayLabel } from './chart';
 import type { DayNumbers } from './types';
 
@@ -18,10 +19,11 @@ const CORNER = 2;
 function Bar({ x, value, max, color, opacity, label }: { x: number; value: number; max: number; color: string; opacity?: number; label: string }) {
   if (value <= 0) return null;
   const h = Math.max(CORNER, Math.round((value / max) * (HEIGHT - 4)));
+  // the day's numbers as the page's tooltip over the bar (the table below carries them for screen readers)
   return (
-    <rect x={x} y={HEIGHT - h} width={BAR} height={h} rx={CORNER} fill={color} fillOpacity={opacity ?? 1}>
-      <title>{label}</title>
-    </rect>
+    <Described hint={label}>
+      <rect x={x} y={HEIGHT - h} width={BAR} height={h} rx={CORNER} fill={color} fillOpacity={opacity ?? 1} />
+    </Described>
   );
 }
 

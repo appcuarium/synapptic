@@ -16,7 +16,7 @@ export const DEFAULT_NAV: NavItem[] = [
   { to: '/', label: 'Overview', Icon: OverviewIcon, end: true },
   { to: '/pipeline', label: 'Pipeline', Icon: PipelineIcon, end: false },
   { to: '/sessions', label: 'Sessions', Icon: SessionsIcon, end: false },
-  { to: '/profile', label: 'Profile & guards', Icon: ProfileIcon, end: false },
+  { to: '/profile', label: 'Profile & Guards', Icon: ProfileIcon, end: false },
   { to: '/settings', label: 'Settings', Icon: SettingsIcon, end: false },
 ];
 

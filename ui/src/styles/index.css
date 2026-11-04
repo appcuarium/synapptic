@@ -116,6 +116,15 @@
     outline: 2px solid var(--ring);
     outline-offset: -2px;
   }
+  /* Everything that acts on a click shows the pointer (Tailwind 4's preflight leaves buttons on the
+     default cursor; shadcn's Tailwind 4 note adds this rule). Disabled controls keep the default. */
+  button:not(:disabled),
+  [role='button']:not(:disabled),
+  a[href],
+  label[for],
+  summary {
+    cursor: pointer;
+  }
   /* Machine's TileStripShell: hidden scrollbar, grab cursor, brighter tile on hover */
   .strip-scroll {
     -ms-overflow-style: none;

@@ -5,6 +5,7 @@ import { Link, NavLink, useLocation, useSearchParams } from 'react-router-dom';
 import {
   Sidebar, SidebarContent, SidebarMenu, SidebarMenuButton, SidebarMenuItem, useSidebar,
 } from '@/components/ui/sidebar';
+import { Described } from '@/components/machine/Described';
 import { LIVE_REFRESH_MS, type ProjectRow } from '@/features/sessions/types';
 import { Popover, PopoverAnchor, PopoverContent } from '@/components/ui/popover';
 import { cn } from '@/lib/cn';
@@ -43,12 +44,13 @@ function ProjectNav({ onPick, flyout = false }: { onPick: () => void; flyout?: b
   return (
     <div className="flex flex-col max-h-[50vh] overflow-y-auto">
       {items.map((item) => (
-        <Link key={item.slug} to={item.slug ? `/sessions?project=${encodeURIComponent(item.slug)}` : '/sessions'}
-          title={item.label} onClick={onPick}
-          className={cn(projectClasses, flyout && 'pl-4', current === item.slug ? projectOn : projectOff)}>
-          <span className="truncate">{item.label}</span>
-          <span className="text-[11px] text-fg-faint shrink-0">{item.count}</span>
-        </Link>
+        <Described key={item.slug} hint={`${item.label} · ${item.count} session${item.count === 1 ? '' : 's'}`} side="right">
+          <Link to={item.slug ? `/sessions?project=${encodeURIComponent(item.slug)}` : '/sessions'} onClick={onPick}
+            className={cn(projectClasses, flyout && 'pl-4', current === item.slug ? projectOn : projectOff)}>
+            <span className="truncate">{item.label}</span>
+            <span className="text-[11px] text-fg-faint shrink-0">{item.count}</span>
+          </Link>
+        </Described>
       ))}
     </div>
   );

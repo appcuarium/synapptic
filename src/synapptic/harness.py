@@ -9,6 +9,7 @@ It never reads a rule's contents, only its id.
 
 import json
 import os
+import re
 import time
 from pathlib import Path
 
@@ -288,6 +289,37 @@ def excluded_words() -> list[dict]:
     """The words kept out, per rule: {key, rule_id, phrase, regex}."""
     return [{"key": key, "rule_id": p["rule_id"], "phrase": p.get("phrase", ""), "regex": p["regex"]}
             for key, p in load_proposals().items() if p.get("status") == "rejected"]
+
+
+# ----- the guards the synthesis writes (the archetype keeps the twin; the guards become rules) ---------
+
+def scope_for(root: str | None) -> str:
+    """The directory pattern a rule applies under: the project root, or "" for everywhere."""
+    return f"^{re.escape(root.rstrip('/'))}(?:/|$)" if root else ""
+
+
+def synthesized_rules(root: str | None) -> list[dict]:
+    """The rules the synthesis wrote before in this scope, {id, text}, so the model keeps their ids."""
+    export = json.loads(require_core().harness_export())
+    scope = scope_for(root)
+    found = []
+    for rule in export["rules"]:
+        if rule.get("origin") == "synthesis" and (rule.get("applies under") or "") == scope:
+            found.append({"id": rule["rule"], "text": (rule.get("before") or {}).get("context", "")})
+    return found
+
+
+def sync_rules(rules: list[dict], root: str | None) -> dict:
+    """Write the synthesis's rules into the store for a project (or everywhere): each with its phrases as
+    words and its file pattern. New ids are added, the synthesis's own rules are updated in their text, a rule
+    the user wrote or removed is left alone. Returns {added, updated, kept, skipped}."""
+    plain = []
+    for rule in rules:
+        phrases = [phrase for phrase in (rule.get("phrases") or []) if isinstance(phrase, str) and phrase.strip()]
+        plain.append({"id": str(rule.get("id", "")).strip(), "text": str(rule.get("text", "")).strip(),
+                      "words": "|".join(phrase_regex(phrase.strip()) for phrase in phrases),
+                      "files": str(rule.get("files") or "").strip()})
+    return _call(require_core().harness_sync_rules, json.dumps({"rules": plain, "where": scope_for(root)}))
 
 
 def mine(transcripts: list[Path], config: dict | None = None, corpus_transcripts: list[Path] | None = None) -> list[dict]:

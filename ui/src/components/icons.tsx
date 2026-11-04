@@ -18,6 +18,11 @@ export const LogoIcon = (p: IconProps) => (
     <path d="M8.3 11l7.4-3.6M8.3 13l7.4 3.6" />
   </Svg>
 );
+// Machine's restart arrow (the circular arrow at the bottom right of its pages), drawn larger than the
+// theme chips' icons so it reads as the one action on the bar (operator: "very small" at the chip size).
+export const RestartIcon = (p: IconProps) => (
+  <Svg size={20} strokeWidth={2} {...p}><path d="M20 12a8 8 0 11-2.3-5.7" /><path d="M20 4v5h-5" /></Svg>
+);
 export const OverviewIcon = (p: IconProps) => (
   <Svg {...p}>
     <rect x="3" y="3" width="7" height="9" /><rect x="14" y="3" width="7" height="5" />
