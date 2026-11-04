@@ -1136,22 +1136,35 @@ def harness_stats(days):
 @harness_group.command("tune")
 @click.option("--days", default=14, show_default=True, help="The window the decisions look at, in days")
 def harness_tune(days):
-    """One tuning pass: promote the proposals whose evidence is there; every change can be undone."""
+    """One tuning pass: take away the words that fire idle, promote the proposals whose evidence is there; every
+    change can be undone."""
     try:
         found = harness.tune(days)
     except (harness.HarnessError, ValueError) as exc:
         raise click.ClickException(str(exc))
+    for entry in found["idle"]:
+        head = f"  {entry['kind']} {entry['key']}: {entry['rule_id']} /{entry['pattern']}/  {entry['idle']} of {entry['fires']} fire(s) idle"
+        if entry["kind"] == "narrowed":
+            click.echo(f"{head}, now /{entry['written']}/ ({entry['version']})")
+        elif entry["kind"] == "reverted":
+            click.echo(f"{head}, {entry['undid']} undone ({entry['version']})")
+        elif entry["kind"] == "demoted":
+            click.echo(f"{head}, back in shadow ({entry['version']})")
+        else:
+            click.echo(f"{head}, kept: {entry['reason']}")
     for entry in found["promoted"]:
+        where = "prompts in the window" if entry["fresh"] else "prior prompts"
         click.echo(f"  promoted {entry['key']} ({entry['version']}): {entry['rule_id']} += /{entry['pattern']}/  "
-                   f"receipts in {entry['sessions']} session(s), matches {entry['matches']} of {entry['corpus']} prior prompts, "
+                   f"receipts in {entry['sessions']} session(s), matches {entry['matches']} of {entry['corpus']} {where}, "
                    f"shadow {entry['active']}/{entry['would_fire']} active")
     for entry in found["held"]:
         click.echo(f"  held {entry['key']}: {entry['rule_id']} /{entry['pattern']}/  {entry['reason']}")
-    if not found["promoted"] and not found["held"]:
-        click.echo("No pending proposal.")
+    if not found["promoted"] and not found["held"] and not found["idle"]:
+        click.echo("No pending proposal, no idle word.")
     else:
-        click.echo(f"{len(found['promoted'])} promoted, {len(found['held'])} held. `synapptic harness changes` lists the changes, "
-                   f"`synapptic harness undo <id>` reverts one.")
+        changed = sum(1 for entry in found["idle"] if entry["kind"] != "kept")
+        click.echo(f"{len(found['promoted'])} promoted, {len(found['held'])} held, {changed} idle word(s) taken away. "
+                   f"`synapptic harness changes` lists the changes, `synapptic harness undo <id>` reverts one.")
 
 
 @harness_group.command("changes")

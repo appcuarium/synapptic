@@ -101,8 +101,9 @@ def save_proposals(proposals: dict[str, dict]) -> None:
 
 
 def rejected_regexes(proposals: dict[str, dict], rule_id: str) -> set[str]:
-    """The words the user rejected, and the ones an undo reverted: neither is proposed again."""
-    return {p["regex"] for p in proposals.values() if p.get("rule_id") == rule_id and p.get("status") in ("rejected", "reverted")}
+    """The words the user rejected, the ones an undo or the tuner reverted, and the ones the tuner narrowed to a
+    two-word form: none is proposed again."""
+    return {p["regex"] for p in proposals.values() if p.get("rule_id") == rule_id and p.get("status") in ("rejected", "reverted", "narrowed")}
 
 
 def record_proposal(proposals: dict[str, dict], miss: dict, candidate: dict) -> dict:
@@ -190,11 +191,13 @@ def stats(days: int = 14, transcripts: list[Path] | None = None) -> dict:
 # core decides), every change is a version, the user keeps the undo.
 
 def tune(days: int = 14, transcripts: list[Path] | None = None) -> dict:
-    """One tuning pass: {"days", "promoted": [...], "held": [...]}, each entry with the proposal's key, rule,
-    pattern and the numbers the decision rests on; a held entry carries its reason."""
+    """One tuning pass: {"days", "promoted": [...], "held": [...], "idle": [...]}, each entry with the key, rule,
+    pattern and the numbers the decision rests on; a held entry carries its reason, an idle entry what became of
+    the word (narrowed, reverted, demoted, kept). The transcripts go with their project roots, as the corpus does."""
     paths = transcripts if transcripts is not None else operator_transcripts()
+    pairs = [(str(path), str(resolve_project_root(path.parent.name) or "")) for path in paths]
     try:
-        return require_core().harness_tune(days, [str(path) for path in paths])
+        return require_core().harness_tune(days, pairs)
     except ValueError as exc:
         raise HarnessError(str(exc)) from exc
 
