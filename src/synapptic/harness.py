@@ -101,7 +101,8 @@ def save_proposals(proposals: dict[str, dict]) -> None:
 
 
 def rejected_regexes(proposals: dict[str, dict], rule_id: str) -> set[str]:
-    return {p["regex"] for p in proposals.values() if p.get("rule_id") == rule_id and p.get("status") == "rejected"}
+    """The words the user rejected, and the ones an undo reverted: neither is proposed again."""
+    return {p["regex"] for p in proposals.values() if p.get("rule_id") == rule_id and p.get("status") in ("rejected", "reverted")}
 
 
 def record_proposal(proposals: dict[str, dict], miss: dict, candidate: dict) -> dict:
@@ -182,6 +183,36 @@ def stats(days: int = 14, transcripts: list[Path] | None = None) -> dict:
     and per word of its vocabulary, from the store's events joined with the user's own sessions."""
     paths = transcripts if transcripts is not None else operator_transcripts()
     return require_core().harness_stats(days, [str(path) for path in paths])
+
+
+# ----- the tuner -------------------------------------------------------------------------------------
+# Approving is the harness's job: one pass promotes the pending proposals whose evidence is there (the
+# core decides), every change is a version, the user keeps the undo.
+
+def tune(days: int = 14, transcripts: list[Path] | None = None) -> dict:
+    """One tuning pass: {"days", "promoted": [...], "held": [...]}, each entry with the proposal's key, rule,
+    pattern and the numbers the decision rests on; a held entry carries its reason."""
+    paths = transcripts if transcripts is not None else operator_transcripts()
+    try:
+        return require_core().harness_tune(days, [str(path) for path in paths])
+    except ValueError as exc:
+        raise HarnessError(str(exc)) from exc
+
+
+def changes(limit: int = 20) -> list[dict]:
+    """The last changes to the rules, newest first: id, ts, rule_id, field, before, after, kind, key, numbers, undone."""
+    try:
+        return list(require_core().harness_changes(limit))
+    except ValueError as exc:
+        raise HarnessError(str(exc)) from exc
+
+
+def undo(version_id: str) -> dict:
+    """Put a rule's words back to what they were before the change; the proposal behind it is never promoted again."""
+    try:
+        return require_core().harness_undo(version_id)
+    except ValueError as exc:
+        raise HarnessError(str(exc)) from exc
 
 
 def mine(transcripts: list[Path], config: dict | None = None, corpus_transcripts: list[Path] | None = None) -> list[dict]:

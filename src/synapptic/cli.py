@@ -1133,6 +1133,58 @@ def harness_stats(days):
             click.echo(f"      /{word['pattern']}/  {word['fires']} fire(s), {word['idle']} idle")
 
 
+@harness_group.command("tune")
+@click.option("--days", default=14, show_default=True, help="The window the decisions look at, in days")
+def harness_tune(days):
+    """One tuning pass: promote the proposals whose evidence is there; every change can be undone."""
+    try:
+        found = harness.tune(days)
+    except (harness.HarnessError, ValueError) as exc:
+        raise click.ClickException(str(exc))
+    for entry in found["promoted"]:
+        click.echo(f"  promoted {entry['key']} ({entry['version']}): {entry['rule_id']} += /{entry['pattern']}/  "
+                   f"receipts in {entry['sessions']} session(s), matches {entry['matches']} of {entry['corpus']} prior prompts, "
+                   f"shadow {entry['active']}/{entry['would_fire']} active")
+    for entry in found["held"]:
+        click.echo(f"  held {entry['key']}: {entry['rule_id']} /{entry['pattern']}/  {entry['reason']}")
+    if not found["promoted"] and not found["held"]:
+        click.echo("No pending proposal.")
+    else:
+        click.echo(f"{len(found['promoted'])} promoted, {len(found['held'])} held. `synapptic harness changes` lists the changes, "
+                   f"`synapptic harness undo <id>` reverts one.")
+
+
+@harness_group.command("changes")
+@click.option("--limit", default=20, show_default=True, help="How many, newest first")
+def harness_changes(limit):
+    """The changes made to the rules' words: by an approval, by the tuner, by an undo."""
+    try:
+        found = harness.changes(limit)
+    except (harness.HarnessError, ValueError) as exc:
+        raise click.ClickException(str(exc))
+    if not found:
+        click.echo("No changes.")
+        return
+    for change in found:
+        when = time.strftime("%Y-%m-%d %H:%M", time.localtime(change["ts"]))
+        undone = "  (undone)" if change.get("undone") else ""
+        numbers = change.get("numbers")
+        before = f"  before: {numbers['fires']} fire(s), {numbers['idle']} idle, {numbers['misses']} miss(es)" if numbers else ""
+        click.echo(f"  {change['id']}  {when}  {change['kind']:8}  {change['rule_id']}{undone}{before}")
+        click.echo(f"      {change['field']}: /{change['before']}/ -> /{change['after']}/")
+
+
+@harness_group.command("undo")
+@click.argument("version_id")
+def harness_undo(version_id):
+    """Put a rule's words back to what they were before a change (its id from `synapptic harness changes`)."""
+    try:
+        done = harness.undo(version_id)
+    except (harness.HarnessError, ValueError) as exc:
+        raise click.ClickException(str(exc))
+    click.echo(f"Undid {done['undid']} as {done['id']}: the {done['field']} of {done['rule_id']} are /{done['restored']}/ again")
+
+
 def proposal_key(proposal: dict) -> str:
     return harness.proposal_id(proposal["rule_id"], proposal["regex"])
 
