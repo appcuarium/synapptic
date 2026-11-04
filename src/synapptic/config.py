@@ -1,5 +1,6 @@
 """Paths, defaults, and dimension definitions for synaptic."""
 
+import os
 from pathlib import Path
 
 
