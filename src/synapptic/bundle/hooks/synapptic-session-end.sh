@@ -63,6 +63,7 @@ nohup bash -c '
     synapptic merge >> '"$LOGFILE"' 2>&1
     synapptic synthesize -p '"$PROJECT"' >> '"$LOGFILE"' 2>&1
     synapptic integrate -p '"$PROJECT"' >> '"$LOGFILE"' 2>&1
+    synapptic learn -s '"$SESSION_ID"' >> '"$LOGFILE"' 2>&1
     echo "[$(date)] Done '"$SESSION_ID"'" >> '"$LOGFILE"'
     rm -f '"$PIDFILE"'
 ' </dev/null >/dev/null 2>&1 &

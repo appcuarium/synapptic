@@ -1,5 +1,8 @@
 // Shapes of the server methods config.get / config.update / providers.list
 // (src/synapptic/dashboard/handlers.py).
+export const TUNING_LEVELS = ['off', 'conservative', 'normal', 'eager'] as const;
+export type TuningLevel = (typeof TUNING_LEVELS)[number];
+
 export interface DashboardConfig {
   provider: string;
   model: string;
@@ -8,6 +11,7 @@ export interface DashboardConfig {
   batches?: { extract?: boolean };
   include_headless_sessions?: boolean;
   write_rules: boolean;
+  tuning: TuningLevel;   // how readily the guards' words change on their own
   [key: string]: unknown;
 }
 
@@ -27,4 +31,5 @@ export interface ConfigPatch extends Record<string, unknown> {
   batches?: { extract?: boolean };
   include_headless_sessions?: boolean;
   write_rules?: boolean;
+  tuning?: TuningLevel;
 }

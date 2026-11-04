@@ -1,0 +1,205 @@
+// Profile & guards: a strip of projects with a Global card first (the rules that apply everywhere); for the
+// selected card, the user's twin (the archetype `synapptic archetype` shows) and the rules that apply there,
+// each with its numbers over the window as a chart and an on/off switch; then the changes to the rules'
+// words (`synapptic diff`) with the undo (`synapptic rollback`). The words themselves never reach this page.
+// A dashboard built on this one passes its own rule list method, more to show under a rule (`extras`) and
+// what opens under a rule on request (`details`), and gets the same page.
+// Built on the Settings page's pieces (TileStrip, ToggleRow, the buttons), the session browser's stat cells.
+import { useQueryClient } from '@tanstack/react-query';
+import { type ReactNode, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
+import { PageHeader } from '@/components/layout/PageHeader';
+import { ToggleRow } from '@/components/machine/OnOffToggle';
+import { TileStrip } from '@/components/machine/TileStrip';
+import { Button } from '@/components/ui/button';
+import { StatCell } from '@/features/sessions/SessionsPage';
+import { formatCount } from '@/features/sessions/format';
+import { useWsMutation, useWsQuery } from '@/lib/ws/react';
+import { changeSummary, formatWhen } from './format';
+import { RuleChart } from './RuleChart';
+import type { GuardChange, GuardRow, GuardsList, ProfileView } from './types';
+
+// The Settings page's button corners (template tokens for the rest).
+const buttonClasses = 'rounded-xs shadow-none';
+const CHANGES_QUERY = 'guards.changes';
+// Providers on Settings: the chosen tile at full strength, the others low.
+const SELECTED_TILE_STRENGTH = 1;
+const UNSELECTED_TILE_STRENGTH = 0.15;
+const GLOBAL = '';
+
+export interface GuardsPageProps<R extends GuardRow> {
+  rulesMethod?: string;                     // a method answering in guards.list's shape (default guards.list)
+  rulesTopic?: string;                      // the topic that pushes that list (default guards)
+  extras?: (rule: R) => ReactNode;          // more about a rule, shown under its text
+  details?: (rule: R) => ReactNode;         // what opens under a rule when asked for
+  detailsLabel?: string;                    // the button that opens it (default "Events")
+}
+
+function appliesTo(rule: GuardRow, project: string): boolean {
+  return project === GLOBAL ? rule.projects.length === 0 && !rule.where : rule.projects.includes(project);
+}
+
+function RuleBlock<R extends GuardRow>({ rule, days, onSwitch, disabled, extras, details, detailsLabel }: {
+  rule: R; days: number; onSwitch: (off: boolean) => void; disabled: boolean;
+  extras?: (rule: R) => ReactNode; details?: (rule: R) => ReactNode; detailsLabel: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const n = rule.numbers;
+  return (
+    <div className="bg-page flex flex-col gap-3 px-4 py-4">
+      <ToggleRow id={`guard-${rule.id}`} label={rule.id}
+        description={rule.where ? `under ${rule.where}` : 'everywhere'}
+        on={!rule.off} onChange={(on) => onSwitch(!on)} disabled={disabled || Boolean(rule.core)} />
+      {(rule.context || rule.message) && (
+        <p className="text-[13px] text-fg-subtle">{rule.context || rule.message}</p>
+      )}
+      {extras?.(rule)}
+      <RuleChart id={rule.id} daily={n.daily} days={days} family={rule.family} />
+      {/* the session browser's stats row: one row at every width, smaller cells on phones */}
+      <div className="flex items-start justify-around px-1 sm:px-2 min-h-[52px] overflow-x-auto">
+        <StatCell label="shown" value={formatCount(n.fires)} sub={`${n.sessions} session${n.sessions === 1 ? '' : 's'}`} />
+        <StatCell label="idle" value={formatCount(n.idle)} sub="shown, not needed" />
+        {rule.family && <StatCell label="missed" value={formatCount(n.misses)} sub={rule.anchor ? `not shown for ${rule.anchor}` : 'not shown'} />}
+        <StatCell label="characters" value={formatCount(n.chars)} sub="read by the agent" />
+      </div>
+      {details && (
+        <div className="flex items-start justify-between gap-3">
+          <span className="text-xs text-fg-faint">{open ? `${detailsLabel.toLowerCase()} of ${rule.id}, newest first` : ''}</span>
+          <Button variant="secondary" className={buttonClasses} onClick={() => setOpen(!open)} aria-expanded={open}>
+            {open ? `Hide ${detailsLabel.toLowerCase()}` : detailsLabel}
+          </Button>
+        </div>
+      )}
+      {details && open && details(rule)}
+    </div>
+  );
+}
+
+function ChangeRow({ change, onUndo, disabled }: { change: GuardChange; onUndo: () => void; disabled: boolean }) {
+  const before = change.numbers
+    ? ` · before: ${change.numbers.fires} shown, ${change.numbers.idle} idle, ${change.numbers.misses} missed` : '';
+  return (
+    <div className="bg-page flex items-start justify-between gap-3 px-4 py-4">
+      <div className="min-w-0">
+        <div className="text-[13px] text-fg-muted font-medium">
+          {change.kind} · {change.rule_id} · {changeSummary(change.added, change.removed)}{change.undone ? ' (undone)' : ''}
+        </div>
+        <div className="text-xs text-fg-faint truncate">{change.id} · {formatWhen(change.ts)}{before}</div>
+      </div>
+      {!change.undone && change.kind !== 'undo' && (
+        <Button variant="secondary" className={buttonClasses} disabled={disabled} onClick={onUndo}>Undo</Button>
+      )}
+    </div>
+  );
+}
+
+function ProfileBlock({ profile }: { profile: ProfileView | undefined }) {
+  if (!profile) return <p className="bg-page p-4 text-sm text-fg-subtle gutter">Loading…</p>;
+  if (!profile.archetype) {
+    return <p className="bg-page p-4 text-sm text-fg-subtle gutter">No twin yet for this project. `synapptic ingest` builds it from your sessions.</p>;
+  }
+  return (
+    <div className="bg-page flex flex-col gap-3 px-4 py-4">
+      <div className="text-xs text-fg-faint">
+        profile v{profile.version} · {profile.dimensions.map((d) => `${d.name} ${d.count}`).join(' · ')}
+      </div>
+      <pre className="whitespace-pre-wrap font-sans text-[13px] text-fg-subtle">{profile.archetype}</pre>
+    </div>
+  );
+}
+
+export function GuardsPage<R extends GuardRow = GuardRow>({
+  rulesMethod = 'guards.list', rulesTopic = 'guards', extras, details, detailsLabel = 'Events',
+}: GuardsPageProps<R>) {
+  const [params, setParams] = useSearchParams();
+  const project = params.get('project') ?? GLOBAL;
+  const guards = useWsQuery<Omit<GuardsList, 'rules'> & { rules: R[] }>(rulesMethod, {}, rulesTopic);
+  const profile = useWsQuery<ProfileView>('profile.get', { project });
+  const changes = useWsQuery<GuardChange[]>(CHANGES_QUERY);
+  const queryClient = useQueryClient();
+  const refresh = () => {
+    queryClient.invalidateQueries({ queryKey: [CHANGES_QUERY] });
+    queryClient.invalidateQueries({ queryKey: [rulesMethod] });
+  };
+  const switchRule = useWsMutation<GuardsList, { id: string; off: boolean }>('guards.switch', { onSuccess: refresh });
+  const undo = useWsMutation<Record<string, unknown>, { id: string }>('guards.undo', { onSuccess: refresh });
+
+  if (guards.error) {
+    return (
+      <PageHeader title="Profile & guards">
+        <span className="text-[13px] text-fg-subtle">Could not load the guards: {guards.error.message}</span>
+      </PageHeader>
+    );
+  }
+  if (!guards.data) {
+    return <PageHeader title="Profile & guards"><span className="text-[13px] text-fg-subtle">Loading…</span></PageHeader>;
+  }
+
+  const list = guards.data;
+  const shown = list.rules.filter((rule) => appliesTo(rule, project));
+  const busy = switchRule.isPending || undo.isPending;
+  const failure = switchRule.error ?? undo.error ?? changes.error ?? profile.error;
+  const card = list.projects.find((p) => p.project === project);
+  const label = card?.label ?? project;
+  return (
+    <section className="flex flex-col">
+      <PageHeader title="Profile & guards">
+        <span className="text-[13px] text-fg-subtle truncate hidden sm:inline">
+          {list.rules.length} rule{list.rules.length === 1 ? '' : 's'}, last {list.days} days:{' '}
+          <span className="text-fg-muted">{list.events} shown across {list.transcripts} sessions</span>
+        </span>
+      </PageHeader>
+
+      <TileStrip label="Projects" selectedId={project}
+        statusLeft={<span>{list.projects.length - 1} projects</span>}
+        onSelect={(id: string) => setParams(id === GLOBAL ? {} : { project: id })}
+        tiles={list.projects.map((p) => ({
+          id: p.project,
+          name: `${p.rules} rule${p.rules === 1 ? '' : 's'}`,
+          value: p.label,
+          sub: p.sub ?? (p.project === GLOBAL ? 'applies everywhere' : p.project),
+          strength: p.project === project ? SELECTED_TILE_STRENGTH : UNSELECTED_TILE_STRENGTH,
+        }))} />
+
+      {card?.twin !== false && (
+        <>
+          <PageHeader title={project === GLOBAL ? 'Your twin' : `Your twin in ${label}`}>
+            <span className="text-[13px] text-fg-subtle truncate hidden sm:inline">how you work, built from your sessions</span>
+          </PageHeader>
+          <div className="grid grid-cols-1 gap-px bg-line border-b border-line">
+            <ProfileBlock profile={profile.data} />
+          </div>
+        </>
+      )}
+
+      <PageHeader title={project === GLOBAL ? 'Guards everywhere' : `Guards in ${label}`}>
+        <span className="text-[13px] text-fg-subtle truncate hidden sm:inline">
+          {shown.length} rule{shown.length === 1 ? '' : 's'}
+        </span>
+      </PageHeader>
+      <div className="grid grid-cols-1 gap-px bg-line border-b border-line">
+        {shown.length === 0 && (
+          <p className="bg-page p-4 text-sm text-fg-subtle gutter">No rules here yet. `synapptic guards add` writes one; `synapptic ingest` learns them.</p>
+        )}
+        {shown.map((rule) => (
+          <RuleBlock key={rule.id} rule={rule} days={list.days} disabled={busy}
+            extras={extras} details={details} detailsLabel={detailsLabel}
+            onSwitch={(off) => switchRule.mutate({ id: rule.id, off })} />
+        ))}
+      </div>
+
+      <PageHeader title="Changes">
+        <span className="text-[13px] text-fg-subtle truncate hidden sm:inline">
+          to the rules' words, newest first; an undo puts the words back
+        </span>
+      </PageHeader>
+      <div className="grid grid-cols-1 gap-px bg-line border-b border-line">
+        {changes.data?.length === 0 && <p className="bg-page p-4 text-sm text-fg-subtle gutter">None yet.</p>}
+        {(changes.data ?? []).map((change) => (
+          <ChangeRow key={change.id} change={change} disabled={busy} onUndo={() => undo.mutate({ id: change.id })} />
+        ))}
+      </div>
+      {failure && <p className="p-4 text-sm text-fg-muted gutter">Not done: {failure.message}</p>}
+    </section>
+  );
+}

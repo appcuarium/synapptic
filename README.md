@@ -20,6 +20,23 @@ Every **synapptic** install is personal. No two profiles are alike because no tw
 
 And it is yours alone: **synapptic** runs entirely on your computer. Your sessions, your profile and everything learned from them stay on your disk.
 
+## Reinforced Synaptic Memory
+
+Memory for AI agents is usually sold as "persistent". Persistent is the wrong word. It describes a file that does not change, and the one thing memory must do is change.
+
+The brain does not persist anything. The proteins that hold a memory break down within days. A memory lasts because using it rebuilds it. Forgetting is the default; remembering is work the brain keeps doing.
+
+**Reinforced Synaptic Memory** gives an agent the same deal. What you keep doing is rebuilt and gets stronger. What you stop doing is left to fade. Nothing is deleted by hand, nothing is configured, and the agent does not meet you for the first time every morning.
+
+*Reinforced by use. Pruned by disuse.*
+
+It keeps two things:
+
+- **A picture of who you are.** How you want to be spoken to, what you value, what you already know. Built from your sessions, sharpened by every new one, faded where the evidence stops. This is the User Archetype below.
+- **The reflexes it learned the hard way.** The Guards: what your agent does and does not do for you, learned from your own sessions rather than written by you.
+
+And the loop has finally been closed. What your agent does with its memory feeds back into that memory, on its own, with nothing for you to approve. You keep an undo, and one dial: `synapptic config tuning` sets how readily the memory changes, from off to eager. The person in the middle gets to think about the code.
+
 ## Get started
 
 ```bash
@@ -208,8 +225,10 @@ Your AI coding sessions vanish the moment you close the terminal. **synapptic** 
 ```bash
 pip install synapptic[dashboard]
 synapptic index                 # index your sessions once (incremental after that)
-synapptic dashboard
+synapptic dashboard             # starts it in the background; also stop, restart, status
 ```
+
+`http://127.0.0.1:5200/profile` is the Profile & guards page: your projects as a strip, with a Global card first; pick one and you see your twin there, the guards that apply, each with a chart of its last two weeks and an on/off switch, and every change to them with an undo.
 
 Open `http://127.0.0.1:5200/sessions` and every conversation you've had with Claude Code is there, grouped by project. Each session is a tile with its title (the name you gave it, else Claude Code's own title) and its number of turns. Pick one to read the conversation: your messages, the agent's replies, tool calls as chips, and context compactions marked where they happened.
 
@@ -285,9 +304,18 @@ synapptic benchmark --flush-results                       # clear all results, k
 synapptic benchmark --flush-all                           # clear everything (tests + results)
 synapptic benchmark -n 10 -v --runs 5                     # 10 tests, verbose, 5 runs per test
 
-# Guards
-synapptic guards excluded -p <project>   # view excluded guards with reasons
-synapptic guards include 0 -p <project>  # re-include by index
+# Guards (the rules your agent runs on; `ingest` learns and tunes them)
+synapptic guards                                          # list the rules in words (--json for a plain export)
+synapptic guards add <id> -w "<phrase>" -t "<text>"        # write one by hand (-w repeatable, -p <dir> to scope it)
+synapptic guards remove <id>                              # delete a rule and what was learned for it
+synapptic guards off <id>  |  synapptic guards on <id>    # switch a rule off (it stays, silent) or back on
+synapptic guards exclude <id> "<phrase>"                  # keep a word out of a rule, never proposed again
+synapptic guards excluded                                 # what is kept out (words, and archetype guards -p <project>)
+synapptic guards include <id> "<phrase>"                  # put a word back (archetype guards: by index)
+synapptic stats                                           # also: fires, idle fires and misses per rule and per word
+synapptic diff                                            # also: every change to a rule's words, newest first
+synapptic rollback <change id>                            # put a rule's words back (no argument: previous profile)
+synapptic config tuning off|conservative|normal|eager     # how readily the words change on their own (alone: show)
 
 # Results
 synapptic results list                                    # view all saved results
@@ -296,7 +324,8 @@ synapptic results metrics                                 # token usage stats (O
 synapptic results compare <prov1> <model1> <prov2> <model2>  # compare two models
 
 # Dashboard + session browser
-synapptic dashboard                 # settings and sessions at http://127.0.0.1:5200
+synapptic dashboard                 # start it in the background (settings, sessions, guards at http://127.0.0.1:5200)
+synapptic dashboard stop|restart|status   # the log is ~/.synapptic/dashboard.log
 synapptic index                     # index new sessions (titles, turns) for the browser
 synapptic index --full              # re-index everything
 

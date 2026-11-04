@@ -2,6 +2,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { createBrowserRouter, RouterProvider } from 'react-router-dom';
 import { AppShell } from '@/components/layout/AppShell';
 import { NotBuiltYet } from '@/components/layout/PageHeader';
+import { GuardsPage } from '@/features/guards/GuardsPage';
 import { SessionsPage } from '@/features/sessions/SessionsPage';
 import { SettingsPage } from '@/features/settings/SettingsPage';
 import { WsClient } from '@/lib/ws/client';
@@ -22,7 +23,7 @@ const router = createBrowserRouter([
       { index: true, element: <NotBuiltYet title="Overview" /> },
       { path: 'pipeline', element: <NotBuiltYet title="Pipeline" /> },
       { path: 'sessions', element: <SessionsPage /> },
-      { path: 'profile', element: <NotBuiltYet title="Profile & guards" /> },
+      { path: 'profile', element: <GuardsPage /> },
       { path: 'settings', element: <SettingsPage /> },
     ],
   },

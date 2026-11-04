@@ -3,23 +3,13 @@
 import { type MouseEvent, useState } from 'react';
 import { Link, NavLink, useLocation, useSearchParams } from 'react-router-dom';
 import {
-  OverviewIcon, PipelineIcon, ProfileIcon, SessionsIcon, SettingsIcon,
-} from '@/components/icons';
-import {
   Sidebar, SidebarContent, SidebarMenu, SidebarMenuButton, SidebarMenuItem, useSidebar,
 } from '@/components/ui/sidebar';
 import { LIVE_REFRESH_MS, type ProjectRow } from '@/features/sessions/types';
 import { Popover, PopoverAnchor, PopoverContent } from '@/components/ui/popover';
 import { cn } from '@/lib/cn';
 import { useWsQuery } from '@/lib/ws/react';
-
-const NAV = [
-  { to: '/', label: 'Overview', Icon: OverviewIcon, end: true },
-  { to: '/pipeline', label: 'Pipeline', Icon: PipelineIcon, end: false },
-  { to: '/sessions', label: 'Sessions', Icon: SessionsIcon, end: false },
-  { to: '/profile', label: 'Profile & guards', Icon: ProfileIcon, end: false },
-  { to: '/settings', label: 'Settings', Icon: SettingsIcon, end: false },
-];
+import { useNavItems } from './nav';
 
 const itemClasses =
   'h-10 touch:h-12 gap-3 px-4 rounded-none border-l-2 border-transparent text-[15px] font-normal text-fg-muted ' +
@@ -65,6 +55,7 @@ function ProjectNav({ onPick, flyout = false }: { onPick: () => void; flyout?: b
 }
 
 export function AppSidebar() {
+  const NAV = useNavItems();
   const { pathname } = useLocation();
   const { setOpenMobile, isMobile, state } = useSidebar();
   const onSessions = isActive(pathname, '/sessions', false);

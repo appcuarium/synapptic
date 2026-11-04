@@ -73,4 +73,5 @@ def test_session_end_hook_runs_integrate_for_the_closed_project(tmp_path):
         time.sleep(0.2)
 
     steps = calls.read_text().splitlines()
-    assert steps[-2:] == [f"synthesize -p {SLUG}", f"integrate -p {SLUG}"], steps
+    # integrate for the closed project, then the learning step for the closed session (3e, 2026-11-04)
+    assert steps[-3:] == [f"synthesize -p {SLUG}", f"integrate -p {SLUG}", f"learn -s {SID}"], steps

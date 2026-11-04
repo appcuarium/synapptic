@@ -7,25 +7,30 @@ the last 4 characters.
 """
 
 import asyncio
+import json
+import re
 import time
 from pathlib import Path
 from typing import Awaitable, Callable
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from synapptic import providers
+from synapptic import harness, providers
 from synapptic.config import CLAUDE_PROJECTS_DIR
 from synapptic.dashboard.hub import Hub
 from synapptic.dashboard.protocol import ErrorCode
-from synapptic.integrate import integrate_archetypes, rules_enabled, withdraw_rules
+from synapptic.integrate import integrate_archetypes, resolve_project_root, rules_enabled, withdraw_rules
 from synapptic.sessions.indexer import tail_metadata
 from synapptic.scrub import scrub_text
 from synapptic.sessions.parse import SHOWN_BLOCK_TYPES, compute_session_stats
 from synapptic.sessions.store import DB_PATH, SessionStore
 from synapptic.sessions.tail import TranscriptTail
-from synapptic.state import include_headless_sessions, is_excluded_transcript, slug_from_project_dir
+from synapptic.state import include_headless_sessions, is_excluded_transcript, load_archetype, load_profile, slug_from_project_dir
 
 CONFIG_TOPIC = "config"
+GUARDS_TOPIC = "guards"
+GUARD_CHANGES_SHOWN = 20
+TRANSCRIPT_HEAD_LINES = 50   # a transcript's cwd is in its first records
 API_KEY_HINT_LENGTH = 4
 SESSION_PAGE_SIZE = 100
 SESSION_PAGE_MAX = 500
@@ -63,6 +68,7 @@ class ConfigPatch(BaseModel):
     batches: BatchesPatch | None = None
     include_headless_sessions: bool | None = None
     write_rules: bool | None = None
+    tuning: str | None = None                      # the dial: off, conservative, normal, eager
 
 
 def public_config(config: dict) -> dict:
@@ -72,6 +78,7 @@ def public_config(config: dict) -> dict:
     view["api_key_set"] = bool(key)
     view["api_key_hint"] = key[-API_KEY_HINT_LENGTH:] if len(key) > API_KEY_HINT_LENGTH else ""
     view["write_rules"] = rules_enabled(config)   # explicit: the file leaves it out until switched off
+    view["tuning"] = harness.tuning_level(config)  # explicit, for the same reason
     return view
 
 
@@ -95,6 +102,10 @@ def apply_patch(config: dict, patch: ConfigPatch) -> dict:
         updated["include_headless_sessions"] = patch.include_headless_sessions
     if patch.write_rules is not None:
         updated["write_rules"] = patch.write_rules
+    if patch.tuning is not None:
+        if patch.tuning not in harness.TUNING_LEVELS:
+            raise MethodError(ErrorCode.INVALID_PARAMS, f"unknown tuning level: {patch.tuning}")
+        updated["harness"] = {**(updated.get("harness") or {}), "tuning": patch.tuning}
     return updated
 
 
@@ -308,6 +319,195 @@ async def sessions_turns(params: dict, hub: Hub) -> dict:
     return await asyncio.to_thread(read_session_turns, validated(SessionTurnsParams, params))
 
 
+# ----- the guards: the rules the agent runs on, their numbers over the window, the changes, the undo ----------
+# The same operations as `synapptic guards`, `synapptic stats`, `synapptic diff` and `synapptic rollback`.
+# Every write pushes the new list to the "guards" topic, as config writes do.
+
+class GuardSwitchParams(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    id: str = Field(min_length=1, max_length=128)
+    off: bool
+
+
+class GuardUndoParams(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    id: str = Field(min_length=1, max_length=32)
+
+
+EMPTY_NUMBERS = {"fires": 0, "idle": 0, "misses": 0, "chars": 0, "sessions": 0, "daily": []}
+
+
+def guard_view(rule: dict, numbers: dict | None) -> dict:
+    """One rule as the browser shows it: the plain export's fields by their labels, plus its numbers. The
+    patterns a rule listens for stay out of the page."""
+    before = rule.get("before") or {}
+    family = rule.get("family") or {}
+    return {
+        "id": rule["rule"],
+        "off": bool(rule.get("switched off")),
+        "where": rule.get("applies under") or "",
+        "context": before.get("context") or "",
+        "message": rule.get("message") or "",
+        "family": bool(family),
+        "anchor": family.get("anchor") or "",
+        "why": rule.get("why") or "",
+        "numbers": {name: numbers[name] for name in EMPTY_NUMBERS} if numbers else dict(EMPTY_NUMBERS),
+    }
+
+
+def transcript_cwd(path: str) -> str:
+    """The working directory the session ran in, from its first records (a path with spaces cannot be read back
+    from Claude Code's directory name, the transcript's own cwd can)."""
+    try:
+        with open(path, encoding="utf-8", errors="replace") as lines:
+            for _, line in zip(range(TRANSCRIPT_HEAD_LINES), lines):
+                try:
+                    record = json.loads(line)
+                except ValueError:
+                    continue
+                cwd = record.get("cwd") if isinstance(record, dict) else None
+                if cwd:
+                    return str(cwd)
+    except OSError:
+        pass
+    return ""
+
+
+def project_roots() -> dict[str, str]:
+    """Each indexed project's directory on disk, by slug: decoded from Claude Code's directory name, else read
+    from the latest transcript's cwd; projects with neither are left out."""
+    store = open_index()
+    try:
+        dirs = store.get_project_dirs()
+    finally:
+        store.close()
+    roots = {}
+    for slug, (project_dir, file_path) in dirs.items():
+        root = resolve_project_root(project_dir)
+        found = str(root) if root is not None else transcript_cwd(file_path)
+        if found:
+            roots[slug] = found
+    return roots
+
+
+def rule_applies_under(where: str, root: str) -> bool:
+    try:
+        return re.search(where, root) is not None
+    except re.error:
+        return False
+
+
+def read_guards() -> dict:
+    """The rules with their numbers over the window and the projects they apply to: {days, events, transcripts,
+    projects: [{project, label, rules}], rules: [guard_view + projects: [slug...] (empty: everywhere)]}."""
+    core = harness.require_core()
+    export = json.loads(core.harness_export())
+    found = harness.stats(harness.RULE_WINDOW_DAYS)
+    numbers = {rule["id"]: rule for rule in found["rules"]}
+    views = [guard_view(rule, numbers.get(rule["rule"])) for rule in export["rules"]]
+    roots = project_roots()
+    for view in views:
+        view["projects"] = [slug for slug, root in roots.items() if view["where"] and rule_applies_under(view["where"], root)]
+    projects = [{"project": "", "label": "Global", "rules": sum(1 for view in views if not view["where"])}]
+    for row in read_projects():
+        slug = row["project"]
+        projects.append({"project": slug, "label": slug, "rules": sum(1 for view in views if slug in view["projects"])})
+    return {"days": found["days"], "events": found["events"], "transcripts": found["transcripts"],
+            "projects": projects, "rules": views}
+
+
+def alternatives(pattern: str) -> list[str]:
+    """The top-level alternatives of a pattern (split on | outside groups), to count what a change added or took."""
+    parts, depth, current, i = [], 0, "", 0
+    while i < len(pattern):
+        ch = pattern[i]
+        if ch == "\\" and i + 1 < len(pattern):
+            current += pattern[i:i + 2]
+            i += 2
+            continue
+        if ch in "([":
+            depth += 1
+        elif ch in ")]":
+            depth = max(0, depth - 1)
+        if ch == "|" and depth == 0:
+            parts.append(current)
+            current = ""
+        else:
+            current += ch
+        i += 1
+    parts.append(current)
+    return [part for part in parts if part]
+
+
+def change_view(change: dict) -> dict:
+    """A change to a rule's words without the words: what kind, which rule, when, the numbers, how many
+    alternatives came and went, and whether it was undone."""
+    before, after = alternatives(change.get("before") or ""), alternatives(change.get("after") or "")
+    return {"id": change["id"], "ts": change["ts"], "rule_id": change["rule_id"], "kind": change["kind"],
+            "key": change.get("key", ""), "numbers": change.get("numbers"), "undone": change.get("undone"),
+            "added": sum(1 for part in after if part not in before), "removed": sum(1 for part in before if part not in after)}
+
+
+def read_changes() -> list[dict]:
+    return [change_view(change) for change in harness.changes(GUARD_CHANGES_SHOWN)]
+
+
+def twin_text(archetype: str) -> str:
+    """The archetype's twin: its text up to the Guards section (the guards are the rules the page lists)."""
+    cut = re.search(r"^## Guards\b", archetype, re.M)
+    return archetype[:cut.start()].rstrip() if cut else archetype
+
+
+def read_profile(project: str) -> dict:
+    """The user's twin for a project (the global one for ""): the archetype's twin text and the profile's dimensions."""
+    slug = project or None
+    profile = load_profile(slug)
+    dimensions = [{"name": name, "count": len(prefs or [])} for name, prefs in (profile.get("dimensions") or {}).items()]
+    return {"project": project, "archetype": twin_text(load_archetype(slug) or ""), "dimensions": dimensions,
+            "version": (profile.get("metadata") or {}).get("profile_version", 0)}
+
+
+def guarded(call, *args):
+    """Run a guards operation on a worker thread; the core's refusals and its absence become method errors."""
+    try:
+        return call(*args)
+    except (harness.HarnessError, ValueError) as exc:
+        raise MethodError(ErrorCode.INVALID_PARAMS, str(exc)) from exc
+
+
+async def guards_list(params: dict, hub: Hub) -> dict:
+    return await asyncio.to_thread(guarded, read_guards)
+
+
+async def guards_changes(params: dict, hub: Hub) -> list[dict]:
+    return await asyncio.to_thread(guarded, read_changes)
+
+
+class ProfileParams(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    project: str = Field(default="", max_length=256)
+
+
+async def profile_get(params: dict, hub: Hub) -> dict:
+    query = validated(ProfileParams, params)
+    return await asyncio.to_thread(read_profile, query.project)
+
+
+async def guards_switch(params: dict, hub: Hub) -> dict:
+    query = validated(GuardSwitchParams, params)
+    await asyncio.to_thread(guarded, harness.switch_rule, query.id, query.off)
+    view = await asyncio.to_thread(guarded, read_guards)
+    hub.publish(GUARDS_TOPIC, view)
+    return view
+
+
+async def guards_undo(params: dict, hub: Hub) -> dict:
+    query = validated(GuardUndoParams, params)
+    done = await asyncio.to_thread(guarded, harness.undo, query.id)
+    hub.publish(GUARDS_TOPIC, await asyncio.to_thread(guarded, read_guards))
+    return done
+
+
 Method = Callable[[dict, Hub], Awaitable[object]]
 METHODS: dict[str, Method] = {
     "config.get": config_get,
@@ -316,4 +516,9 @@ METHODS: dict[str, Method] = {
     "sessions.projects": sessions_projects,
     "sessions.list": sessions_list,
     "sessions.turns": sessions_turns,
+    "guards.list": guards_list,
+    "guards.changes": guards_changes,
+    "guards.switch": guards_switch,
+    "guards.undo": guards_undo,
+    "profile.get": profile_get,
 }

@@ -41,7 +41,7 @@ function matches(session: SessionRow, query: string): boolean {
   return haystack.toLowerCase().includes(query);
 }
 
-function StatCell({ label, value, sub }: { label: string; value: string; sub: string }) {
+export function StatCell({ label, value, sub }: { label: string; value: string; sub: string }) {
   return (
     <div className="flex min-h-[68px] shrink-0 flex-col items-center justify-start px-1 sm:px-3 py-2">
       <span className="whitespace-nowrap text-center text-[8px] sm:text-[10px] text-fg-subtle uppercase tracking-wide mb-0.5">{label}</span>

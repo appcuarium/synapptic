@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
 from synapptic.dashboard.app import create_app
+from synapptic.dashboard.handlers import change_view
 
 SECRET = "sk-ant-api03-secret-value-WXYZ"
 
@@ -72,6 +73,55 @@ def test_bad_requests_get_errors_and_the_socket_stays_open(client):
         assert ws.receive_json()["code"] == "bad_message"
         ws.send_text(json.dumps({"type": "ping"}))
         assert ws.receive_json() == {"type": "pong"}
+
+
+def test_the_tuning_dial_is_read_and_written_through_config(client, config_path):
+    with client.websocket_connect("/api/ws") as ws:
+        ws.receive_json()
+        assert request(ws, "r5", "config.get")["result"]["tuning"] == "normal"   # the default, said explicitly
+        reply = request(ws, "r6", "config.update", {"tuning": "eager"})
+        assert reply["result"]["tuning"] == "eager"
+        assert request(ws, "r7", "config.update", {"tuning": "wild"})["code"] == "invalid_params"
+    saved = yaml.safe_load(config_path.read_text())
+    assert saved["harness"] == {"tuning": "eager"} and saved["api_key"] == SECRET
+
+
+def test_the_guards_methods_say_when_the_core_is_missing(client, monkeypatch):
+    # boundary: the compiled core is a separately installed package; here it is absent
+    monkeypatch.setattr("synapptic.core.core", None)
+    with client.websocket_connect("/api/ws") as ws:
+        ws.receive_json()
+        for method, params in (("guards.list", {}), ("guards.changes", {}), ("guards.switch", {"id": "r", "off": True}),
+                               ("guards.undo", {"id": "v1"})):
+            reply = request(ws, "r8", method, params)
+            assert reply["code"] == "invalid_params" and "synapptic-core package is not installed" in reply["message"], method
+        assert request(ws, "r9", "guards.switch", {"id": "r"})["code"] == "invalid_params"   # off is required
+
+
+def test_the_profile_is_read_per_project_and_global(client, tmp_path, monkeypatch):
+    # boundary: the profile directories are this test's own, never the user's ~/.synapptic
+    monkeypatch.setattr("synapptic.state.GLOBAL_DIR", tmp_path / "global")
+    monkeypatch.setattr("synapptic.state.PROJECTS_DIR", tmp_path / "projects")
+    (tmp_path / "global").mkdir()
+    (tmp_path / "global" / "archetype.md").write_text("# User Archetype\n\nReads first, verifies everything.\n\n## Guards\n\n1. NEVER guess.\n")
+    (tmp_path / "global" / "profile.yaml").write_text("metadata:\n  profile_version: 3\ndimensions:\n  values:\n  - {text: correctness}\n  - {text: speed}\n")
+    with client.websocket_connect("/api/ws") as ws:
+        ws.receive_json()
+        found = request(ws, "p1", "profile.get", {"project": ""})["result"]
+        missing = request(ws, "p2", "profile.get", {"project": "no-such-project"})["result"]
+        assert request(ws, "p3", "profile.get", {"project": "x", "extra": 1})["code"] == "invalid_params"
+    assert found["project"] == "" and found["version"] == 3 and "Reads first" in found["archetype"]
+    assert "## Guards" not in found["archetype"]   # the twin only: the guards are the rules the page lists
+    assert found["dimensions"] == [{"name": "values", "count": 2}]
+    assert missing == {"project": "no-such-project", "archetype": "", "dimensions": [], "version": 0}
+
+
+def test_a_change_is_shown_as_counts_never_as_the_words():
+    change = {"id": "v1", "ts": 1.0, "rule_id": "r", "kind": "promoted", "before": "a|b", "after": "a|b|c\\|d|(e|f)"}
+    shown = change_view(change)
+    assert shown["added"] == 2 and shown["removed"] == 0
+    assert shown["kind"] == "promoted" and "before" not in shown and "after" not in shown
+    assert change_view({**change, "before": "a|b|c", "after": "a"})["removed"] == 2
 
 
 def test_a_socket_from_another_website_is_refused(client):

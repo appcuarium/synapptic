@@ -16,7 +16,7 @@ from synapptic.config import CLAUDE_PROJECTS_DIR
 from synapptic.core import CoreMissing, require_core as load_core
 from synapptic.extract import extract_json
 from synapptic.integrate import resolve_project_root
-from synapptic.providers import call_llm, load_config
+from synapptic.providers import call_llm, load_config, save_config
 from synapptic.state import find_session_transcripts
 
 PROMPT_EXCERPT = 240
@@ -188,16 +188,43 @@ def stats(days: int = 14, transcripts: list[Path] | None = None) -> dict:
 
 # ----- the tuner -------------------------------------------------------------------------------------
 # Approving is the harness's job: one pass promotes the pending proposals whose evidence is there (the
-# core decides), every change is a version, the user keeps the undo.
+# core decides), every change is a version, the user keeps the undo and one dial: how readily the words
+# change (`harness.tuning` in the config: off, conservative, normal or eager).
 
-def tune(days: int = 14, transcripts: list[Path] | None = None) -> dict:
-    """One tuning pass: {"days", "promoted": [...], "held": [...], "idle": [...]}, each entry with the key, rule,
-    pattern and the numbers the decision rests on; a held entry carries its reason, an idle entry what became of
-    the word (narrowed, reverted, demoted, kept). The transcripts go with their project roots, as the corpus does."""
+TUNING_LEVELS = ("off", "conservative", "normal", "eager")
+TUNING_DEFAULT = "normal"
+RULE_WINDOW_DAYS = 14   # the window the numbers and the tuning pass look back over
+
+
+def tuning_level(config: dict | None = None) -> str:
+    """The dial as configured; an unknown or missing value is the default."""
+    config = config if config is not None else load_config()
+    level = (config.get("harness") or {}).get("tuning", TUNING_DEFAULT)
+    return level if level in TUNING_LEVELS else TUNING_DEFAULT
+
+
+def set_tuning_level(level: str) -> dict:
+    """Write the dial into the config file and return the config."""
+    if level not in TUNING_LEVELS:
+        raise HarnessError(f"unknown tuning level {level}: {', '.join(TUNING_LEVELS)}")
+    config = load_config()
+    config["harness"] = {**(config.get("harness") or {}), "tuning": level}
+    save_config(config)
+    return config
+
+
+def tune(days: int = 14, transcripts: list[Path] | None = None, level: str | None = None) -> dict:
+    """One tuning pass: {"days", "level", "promoted": [...], "held": [...], "idle": [...]}, each entry with the key,
+    rule, pattern and the numbers the decision rests on; a held entry carries its reason, an idle entry what became
+    of the word (narrowed, reverted, demoted, kept). The transcripts go with their project roots, as the corpus
+    does. The level is the dial's unless given; off leaves the words as they are and says so."""
+    level = level or tuning_level()
+    if level == "off":
+        return {"days": days, "level": level, "promoted": [], "held": [], "idle": []}
     paths = transcripts if transcripts is not None else operator_transcripts()
     pairs = [(str(path), str(resolve_project_root(path.parent.name) or "")) for path in paths]
     try:
-        return require_core().harness_tune(days, pairs)
+        return require_core().harness_tune(days, pairs, level)
     except ValueError as exc:
         raise HarnessError(str(exc)) from exc
 
@@ -216,6 +243,51 @@ def undo(version_id: str) -> dict:
         return require_core().harness_undo(version_id)
     except ValueError as exc:
         raise HarnessError(str(exc)) from exc
+
+
+# ----- the user's own hand on the rules (the `synapptic guards` commands) ------------------------------
+
+def _call(function, *args):
+    try:
+        return function(*args)
+    except ValueError as exc:
+        raise HarnessError(str(exc)) from exc
+
+
+def word_regex(word: str) -> str:
+    """A word as typed by the user: a plain phrase becomes its regex, anything with regex syntax is taken as is."""
+    plain = all(ch.isalnum() or ch in " '-" for ch in word)
+    return phrase_regex(word) if plain else word
+
+
+def add_rule(rule_id: str, phrases: list[str], text: str, where: str = "") -> str:
+    """A hand-written rule: its card shows when a prompt matches one of the phrases, inside `where` when given."""
+    words = "|".join(phrase_regex(phrase) for phrase in phrases if phrase.strip())
+    return _call(require_core().harness_add_rule, json.dumps({"id": rule_id, "words": words, "text": text, "where": where}))
+
+
+def remove_rule(rule_id: str) -> bool:
+    return _call(require_core().harness_remove_rule, rule_id)
+
+
+def switch_rule(rule_id: str, off: bool) -> bool:
+    return _call(require_core().harness_switch_rule, rule_id, off)
+
+
+def exclude_word(rule_id: str, word: str) -> dict:
+    """Take a word out of a rule and keep it out: the tuner never proposes it again for that rule."""
+    return _call(require_core().harness_exclude_word, rule_id, word_regex(word))
+
+
+def include_word(rule_id: str, word: str) -> dict:
+    """Put a word back into a rule (approved, live from the next prompt)."""
+    return _call(require_core().harness_include_word, rule_id, word_regex(word))
+
+
+def excluded_words() -> list[dict]:
+    """The words kept out, per rule: {key, rule_id, phrase, regex}."""
+    return [{"key": key, "rule_id": p["rule_id"], "phrase": p.get("phrase", ""), "regex": p["regex"]}
+            for key, p in load_proposals().items() if p.get("status") == "rejected"]
 
 
 def mine(transcripts: list[Path], config: dict | None = None, corpus_transcripts: list[Path] | None = None) -> list[dict]:

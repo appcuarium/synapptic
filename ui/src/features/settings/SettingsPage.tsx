@@ -13,7 +13,7 @@ import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { cn } from '@/lib/cn';
 import { useWsMutation, useWsQuery } from '@/lib/ws/react';
-import type { ConfigPatch, DashboardConfig, ProviderInfo } from './types';
+import { TUNING_LEVELS, type ConfigPatch, type DashboardConfig, type ProviderInfo, type TuningLevel } from './types';
 
 // Colours, weight and touch height come from the Button variants (template tokens); only the mockup's 2px corners here.
 const buttonClasses = 'rounded-xs shadow-none';
@@ -30,7 +30,16 @@ interface Draft {
   batchesExtract: boolean;
   includeHeadless: boolean;
   writeRules: boolean;
+  tuning: TuningLevel;
 }
+
+// What each position of the dial means, in the words the CLI uses (`synapptic config tuning`).
+const TUNING_LABELS: Record<TuningLevel, string> = {
+  off: 'off: the words stay as they are',
+  conservative: 'conservative: changes only on strong evidence',
+  normal: 'normal',
+  eager: 'eager: changes on little evidence',
+};
 
 function draftFrom(config: DashboardConfig): Draft {
   return {
@@ -40,6 +49,7 @@ function draftFrom(config: DashboardConfig): Draft {
     batchesExtract: Boolean(config.batches?.extract),
     includeHeadless: Boolean(config.include_headless_sessions),
     writeRules: config.write_rules,
+    tuning: config.tuning,
   };
 }
 
@@ -53,6 +63,7 @@ function patchFrom(draft: Draft, config: DashboardConfig): ConfigPatch {
     patch.include_headless_sessions = draft.includeHeadless;
   }
   if (draft.writeRules !== config.write_rules) patch.write_rules = draft.writeRules;
+  if (draft.tuning !== config.tuning) patch.tuning = draft.tuning;
   return patch;
 }
 
@@ -145,6 +156,19 @@ export function SettingsPage() {
                   value={draft.apiKey} onChange={(e) => update({ apiKey: e.target.value })} />
               </div>
             )}
+            <div className="flex flex-col gap-1">
+              <Label htmlFor="tuning" className={labelClasses}>Guards tuning</Label>
+              <Select value={draft.tuning} onValueChange={(tuning) => update({ tuning: tuning as TuningLevel })}>
+                <SelectTrigger id="tuning" className={fieldClasses}>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent className="text-muted-foreground">
+                  {TUNING_LEVELS.map((level) => (
+                    <SelectItem key={level} value={level} className="focus:text-muted-foreground">{TUNING_LABELS[level]}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
           </div>
         </div>
 

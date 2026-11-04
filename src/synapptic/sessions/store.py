@@ -114,6 +114,14 @@ class SessionStore:
         ).fetchall()
         return [dict(r) for r in rows]
 
+    def get_project_dirs(self) -> dict[str, tuple[str, str]]:
+        """Each project's Claude Code project directory name and its most recent transcript's path."""
+        rows = self._conn.execute(
+            """SELECT project, project_dir, file_path FROM session_index
+               WHERE last_timestamp IS NOT NULL ORDER BY last_timestamp ASC""",
+        ).fetchall()
+        return {row["project"]: (row["project_dir"], row["file_path"]) for row in rows}
+
     def search_sessions(self, query: str, limit: int = 50) -> list[dict]:
         """Full-text search across session titles and first messages."""
         # Add * for prefix matching so "bench" matches "benchmark"

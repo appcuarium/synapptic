@@ -7,9 +7,10 @@
 - **What learns moved into `synapptic-core`**, a compiled package installed as a dependency (proprietary, free to use, binaries only): the transcript filter, the extraction prompt and parser, the profile merge, decay and promotion, the narrative synthesis, the harness loop. The modules of the same names in this package are the plumbing around it and keep their functions and signatures. Without the core installed, the commands that learn say so: `the synapptic-core package is not installed`.
 - **The default extraction pattern is built into the core** and can no longer be shown (`synapptic patterns show default` says so); `synapptic patterns create <name>` starts from a plain template. User patterns in `~/.synapptic/patterns/` work as before.
 - **`synapptic.config` lost the tuning constants** (decay factor, thresholds, dimension routing sets, the filter signal lists, the dimension descriptions); `DIMENSIONS` stays.
-- **`synapptic harness`**: `mine -s <session> | --all` finds the refusals a coding-agent harness gave without having shown its context first and proposes the missing words; `proposals`, `approve <id>`, `reject <id>`; `rules` shows the rules the harness runs on (`--json` for a plain export).
+- **The guards are rules your agent runs on, and the same commands as before drive them.** `synapptic guards` lists the rules in words (`--json` for a plain export); `guards add <id> -w <phrase> -t <text>` writes one by hand, scoped to a directory with `-p`; `guards remove`, `guards off` and `guards on` delete or silence one; `guards exclude <id> <phrase>` keeps a word out of a rule for good and `guards include <id> <phrase>` puts it back; `guards excluded` shows what is kept out, archetype guards included.
 - **The harness runs inside the core.** Its rules and its event log live encrypted in `~/.synapptic/sessions.db`, the key in the OS keychain (an owner-only file where there is none); nothing is written into your projects. `synapptic install` registers the hook entry points and puts the key in place; `synapptic config show` reports the store. Requires synapptic-core 0.2.
-- **The harness tunes itself.** `synapptic harness stats` shows how each rule and each of its words behaved over a window (fires, idle fires, misses, cost); pending proposals run in shadow first; `synapptic harness tune` promotes the ones whose evidence is there and says why the others are held. It also takes away the words that keep firing for nothing: narrowed, reverted, or sent back to shadow, each with the numbers that decided it; a word you put back with an undo is kept. Every change to a rule's words is a version: `synapptic harness changes` lists them, `synapptic harness undo <id>` puts the words back, and the proposal behind an undone addition is never promoted again.
+- **`synapptic ingest` learns the rules.** After integrating, it learns from the sessions just processed: the rules' words grow where your agent needed them and shrink where they cost you for nothing, and the step says what it changed. `synapptic stats` shows how each rule and each of its words behaved; `synapptic diff` lists every change to a rule's words; `synapptic rollback <change id>` puts the words back, and a word you rolled back stays out. The same learning runs after every session the SessionEnd hook closes (re-run `synapptic install` to update the hook).
+- **One dial for the learning: `synapptic config tuning off | conservative | normal | eager`** sets how readily the rules' words change on their own (default normal; off leaves them as they are). `synapptic config show` reports it.
 
 ### Removed: the relay
 
@@ -21,7 +22,10 @@
 ### Dashboard
 
 - **`synapptic dashboard`**: settings and a session browser at `http://127.0.0.1:5200`, one websocket for all data.
+- **`synapptic dashboard start|stop|restart|status`**: the dashboard runs in the background (a bare `synapptic dashboard` is start), its output in `~/.synapptic/dashboard.log`; `stop` also ends a dashboard started the old way in a terminal.
 - **Live sessions**: a transcript written in the last 5 minutes and not reported ended pulses lime and leads the strip; new sessions appear before they end.
+- **Profile & guards**: a strip of your projects with a Global card first; for the selected one, your twin (the archetype's picture of you) and the rules that apply there, each with a chart of its last two weeks (shown, of it idle, missed) and an on/off switch; then every change to the rules' words with an undo. The tuning dial sits on Settings.
+- **`synapptic stats` lists your own rules only**: synapptic's built-in rules no longer appear in its numbers.
 
 ### Fixes
 

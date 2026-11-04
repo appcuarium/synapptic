@@ -2,6 +2,7 @@
 
 import json
 import os
+import re
 import shutil
 import sys
 import time
@@ -13,6 +14,7 @@ import yaml
 from synapptic import harness, providers
 from synapptic.config import CHECKPOINT_MIN_TOKENS, SYNAPPTIC_DIR, SYNTHESIZE_MIN_HOURS
 from synapptic.core import CoreMissing, core_info, require_core
+from synapptic.dashboard import service as dashboard_service
 from synapptic.integrate import RULES_DIR, integrate_archetypes, rules_enabled, withdraw_rules
 from synapptic.pipeline import (
     checkpoint_session,
@@ -93,6 +95,7 @@ def config_show():
     click.echo(f"Profiling mode:  {mode}")
     click.echo(f"Outputs:         {', '.join(outputs)}")
     click.echo(f"Rules:           {'on' if rules_enabled(config) else 'off'}")
+    click.echo(f"Tuning:          {harness.tuning_level(config)}")
     if api_key:
         click.echo(f"API key:         ...{api_key[-4:]}")
     if api_url:
@@ -245,6 +248,21 @@ def config_rules(state):
     if kept:
         click.echo(f"  {len(kept)} file(s) kept: no synapptic notice, so they may be yours. Remove them by hand if not.")
     click.echo(f"Rules off: the tools no longer get them. Still learning; the rules stay in {RULES_DIR}.")
+
+
+@config_group.command("tuning")
+@click.argument("level", required=False, type=click.Choice(list(harness.TUNING_LEVELS)))
+def config_tuning(level):
+    """How readily the guards' words change on their own: off, conservative, normal (default) or eager.
+    Every change stays reversible with `synapptic rollback`."""
+    if level is None:
+        click.echo(f"Tuning: {harness.tuning_level()}")
+        return
+    try:
+        harness.set_tuning_level(level)
+    except harness.HarnessError as exc:
+        raise guard_failure(exc)
+    click.echo(f"Tuning: {level}" + (" (the words stay as they are until switched back on)" if level == "off" else ""))
 
 
 @config_group.command("mode")
@@ -1027,103 +1045,15 @@ def results_compare(provider1, model1, provider2, model2, project):
         click.echo(f"\n  Result: Tie")
 
 
-@cli.group("harness")
-def harness_group():
-    """Learn the harness's vocabulary from its misses: mine refusals, review proposals, approve into the rules."""
-    pass
+RULE_WINDOW_DAYS = harness.RULE_WINDOW_DAYS
 
 
-@harness_group.command("mine")
-@click.option("--session", "-s", "sessions", multiple=True, help="A session id or transcript path (repeatable)")
-@click.option("--all", "everything", is_flag=True, help="Every one of your own sessions")
-def harness_mine(sessions, everything):
-    """Find family refusals that got no card first, and propose the missing words."""
-    if not sessions and not everything:
-        raise click.UsageError("name a session with -s, or pass --all")
-    try:
-        transcripts = [harness.resolve_session(name) for name in sessions]
-        if everything:
-            transcripts.extend(harness.operator_transcripts())
-        results = harness.mine(transcripts)
-    except harness.HarnessError as exc:
-        raise click.ClickException(str(exc))
-    for entry in results:
-        miss = entry["miss"]
-        click.echo(f"  {miss['session'][:8]}  {miss['rule_id']}  refused {miss['timestamp'][:19]}, no card this turn")
-        click.echo(f"    prompt: {miss['prompt'][:PROMPT_SHOWN]!r}")
-        if not entry["rule"]:
-            click.echo("    rule not in the harness store; no proposal")
-        elif not entry["proposals"]:
-            click.echo("    no describing phrase in the prompt; no proposal")
-        for proposal in entry["proposals"]:
-            click.echo(f"    proposal {proposal_key(proposal)}  {proposal['phrase']!r}  /{proposal['regex']}/  "
-                       f"matches {proposal['matches']} of {proposal['corpus']} prior prompts  "
-                       f"({len(proposal['receipts'])} receipt(s), {proposal['status']})")
-    if not results:
-        click.echo("No misses.")
-    else:
-        click.echo(f"{len(results)} miss(es). Review with `synapptic harness proposals`.")
-
-
-@harness_group.command("proposals")
-def harness_proposals():
-    """List the proposals and their state."""
-    proposals = harness.load_proposals()
-    if not proposals:
-        click.echo("No proposals.")
-        return
-    for key, proposal in proposals.items():
-        click.echo(f"  {key}  [{proposal['status']:8}]  {proposal['rule_id']}  {proposal['phrase']!r} -> /{proposal['regex']}/  "
-                   f"{len(proposal['receipts'])} receipt(s), matches {proposal.get('matches', '?')} of {proposal.get('corpus', '?')}")
-        for receipt in proposal["receipts"]:
-            click.echo(f"      {receipt['session'][:8]} {receipt['timestamp'][:19]}  {receipt['prompt_excerpt'][:PROMPT_SHOWN]!r}")
-
-
-@harness_group.command("approve")
-@click.argument("key")
-def harness_approve(key):
-    """Write the proposal's words into its rule's pre.prompt."""
-    try:
-        proposal = harness.approve(key)
-    except harness.HarnessError as exc:
-        raise click.ClickException(str(exc))
-    click.echo(f"Approved {key}: the words of {proposal['rule_id']} are now /{proposal['written']}/")
-
-
-@harness_group.command("reject")
-@click.argument("key")
-def harness_reject(key):
-    """Reject the proposal; the same words are not proposed again for that rule."""
-    try:
-        proposal = harness.reject(key)
-    except harness.HarnessError as exc:
-        raise click.ClickException(str(exc))
-    click.echo(f"Rejected {key}: {proposal['rule_id']} /{proposal['regex']}/")
-
-
-@harness_group.command("rules")
-@click.option("--json", "as_json", is_flag=True, help="The rules as JSON (a plain export)")
-def harness_rules(as_json):
-    """Show the rules the harness runs on, in words."""
-    try:
-        core = harness.require_core()
-        text = core.harness_export() if as_json else core.harness_rules_text()
-    except (harness.HarnessError, ValueError) as exc:
-        raise click.ClickException(str(exc))
-    click.echo(text.rstrip("\n") or "No rules in the harness store.")
-
-
-@harness_group.command("stats")
-@click.option("--days", default=14, show_default=True, help="The window, in days")
-def harness_stats(days):
-    """How the rules behaved: fires, idle fires, misses and cost per rule and per word, over a window."""
-    try:
-        found = harness.stats(days)
-    except (harness.HarnessError, ValueError) as exc:
-        raise click.ClickException(str(exc))
-    click.echo(f"Last {found['days']} day(s): {found['events']} injection(s) across {found['transcripts']} session(s)")
+def echo_rule_stats(days):
+    """How the rules behaved over the window: fires, idle fires, misses and cost per rule and per word."""
+    found = harness.stats(days)
+    click.echo(f"\nGuards, last {found['days']} day(s): {found['events']} card(s) shown across {found['transcripts']} session(s)")
     if not found["rules"]:
-        click.echo("No rule fired in the window.")
+        click.echo("  no rule fired in the window")
         return
     for rule in found["rules"]:
         idle = f", {rule['idle']} idle" if rule["family"] else ""
@@ -1133,15 +1063,37 @@ def harness_stats(days):
             click.echo(f"      /{word['pattern']}/  {word['fires']} fire(s), {word['idle']} idle")
 
 
-@harness_group.command("tune")
-@click.option("--days", default=14, show_default=True, help="The window the decisions look at, in days")
-def harness_tune(days):
-    """One tuning pass: take away the words that fire idle, promote the proposals whose evidence is there; every
-    change can be undone."""
+def echo_rule_changes(limit):
+    """The changes to the rules' words, newest first: by the tuner, by your hand, by an undo."""
+    found = harness.changes(limit)
+    click.echo("\nGuard changes:")
+    if not found:
+        click.echo("  none")
+        return
+    for change in found:
+        when = time.strftime("%Y-%m-%d %H:%M", time.localtime(change["ts"]))
+        undone = "  (undone)" if change.get("undone") else ""
+        numbers = change.get("numbers")
+        before = f"  before: {numbers['fires']} fire(s), {numbers['idle']} idle, {numbers['misses']} miss(es)" if numbers else ""
+        click.echo(f"  {change['id']}  {when}  {change['kind']:8}  {change['rule_id']}{undone}{before}")
+        click.echo(f"      {change['field']}: /{change['before']}/ -> /{change['after']}/")
+
+
+def run_learning(transcripts, days):
+    """The learning step of ingest: mine the sessions just processed for the refusals that got no card first,
+    then one tuning pass over the window. Says what it found; never raises past the pipeline."""
     try:
+        results = harness.mine(transcripts) if transcripts else []
+        misses = sum(1 for entry in results if entry["rule"])
+        proposed = sum(len(entry["proposals"]) for entry in results)
+        click.echo(f"  {misses} miss(es), {proposed} new word(s) proposed")
         found = harness.tune(days)
-    except (harness.HarnessError, ValueError) as exc:
-        raise click.ClickException(str(exc))
+    except harness.HarnessError as exc:
+        click.echo(f"  skipped: {exc}")
+        return
+    if found["level"] == "off":
+        click.echo("  tuning off: the words stay as they are (`synapptic config tuning normal` switches it on)")
+        return
     for entry in found["idle"]:
         head = f"  {entry['kind']} {entry['key']}: {entry['rule_id']} /{entry['pattern']}/  {entry['idle']} of {entry['fires']} fire(s) idle"
         if entry["kind"] == "narrowed":
@@ -1159,43 +1111,30 @@ def harness_tune(days):
                    f"shadow {entry['active']}/{entry['would_fire']} active")
     for entry in found["held"]:
         click.echo(f"  held {entry['key']}: {entry['rule_id']} /{entry['pattern']}/  {entry['reason']}")
-    if not found["promoted"] and not found["held"] and not found["idle"]:
-        click.echo("No pending proposal, no idle word.")
+    changed = sum(1 for entry in found["idle"] if entry["kind"] != "kept")
+    if found["promoted"] or changed:
+        click.echo(f"  {len(found['promoted'])} word(s) promoted, {changed} taken away. `synapptic diff` lists the changes, "
+                   f"`synapptic rollback <id>` reverts one.")
+    elif found["held"]:
+        click.echo(f"  {len(found['held'])} proposal(s) held, waiting for evidence")
     else:
-        changed = sum(1 for entry in found["idle"] if entry["kind"] != "kept")
-        click.echo(f"{len(found['promoted'])} promoted, {len(found['held'])} held, {changed} idle word(s) taken away. "
-                   f"`synapptic harness changes` lists the changes, `synapptic harness undo <id>` reverts one.")
+        click.echo("  nothing to tune")
 
 
-@harness_group.command("changes")
-@click.option("--limit", default=20, show_default=True, help="How many, newest first")
-def harness_changes(limit):
-    """The changes made to the rules' words: by an approval, by the tuner, by an undo."""
-    try:
-        found = harness.changes(limit)
-    except (harness.HarnessError, ValueError) as exc:
-        raise click.ClickException(str(exc))
-    if not found:
-        click.echo("No changes.")
-        return
-    for change in found:
-        when = time.strftime("%Y-%m-%d %H:%M", time.localtime(change["ts"]))
-        undone = "  (undone)" if change.get("undone") else ""
-        numbers = change.get("numbers")
-        before = f"  before: {numbers['fires']} fire(s), {numbers['idle']} idle, {numbers['misses']} miss(es)" if numbers else ""
-        click.echo(f"  {change['id']}  {when}  {change['kind']:8}  {change['rule_id']}{undone}{before}")
-        click.echo(f"      {change['field']}: /{change['before']}/ -> /{change['after']}/")
-
-
-@harness_group.command("undo")
-@click.argument("version_id")
-def harness_undo(version_id):
-    """Put a rule's words back to what they were before a change (its id from `synapptic harness changes`)."""
-    try:
-        done = harness.undo(version_id)
-    except (harness.HarnessError, ValueError) as exc:
-        raise click.ClickException(str(exc))
-    click.echo(f"Undid {done['undid']} as {done['id']}: the {done['field']} of {done['rule_id']} are /{done['restored']}/ again")
+@cli.command(hidden=True)
+@click.option("--session", "-s", help="Learn from this session (the SessionEnd hook); default: tune only")
+def learn(session):
+    """The learning step on its own, as the SessionEnd hook runs it after the closed session is in: the session's
+    misses, then one tuning pass over the window at the configured dial."""
+    transcripts = []
+    if session:
+        found = find_session_transcripts()
+        if session not in found:
+            click.echo(f"Session {session[:8]}... not found")
+            return
+        transcripts = [found[session][0]]
+    click.echo("Learning")
+    run_learning(transcripts, RULE_WINDOW_DAYS)
 
 
 def proposal_key(proposal: dict) -> str:
@@ -1205,42 +1144,133 @@ def proposal_key(proposal: dict) -> str:
 PROMPT_SHOWN = 110
 
 
-@cli.group("guards")
-def guards_group():
-    """View and manage excluded guards."""
-    pass
+def guard_failure(exc):
+    return click.ClickException(str(exc))
+
+
+@cli.group("guards", invoke_without_command=True)
+@click.option("--json", "as_json", is_flag=True, help="The rules as JSON (a plain export)")
+@click.pass_context
+def guards_group(ctx, as_json):
+    """The rules your agent runs on. Alone: list them. Subcommands add or remove one, switch one off or on,
+    keep a word out or put it back."""
+    if ctx.invoked_subcommand is not None:
+        return
+    try:
+        core = harness.require_core()
+        text = core.harness_export() if as_json else core.harness_rules_text()
+    except (harness.HarnessError, ValueError) as exc:
+        raise guard_failure(exc)
+    click.echo(text.rstrip("\n") or "No rules yet. `synapptic guards add` writes one; `synapptic ingest` learns them.")
+
+
+@guards_group.command("add")
+@click.argument("rule_id")
+@click.option("--words", "-w", "phrases", multiple=True, required=True, help="A phrase that triggers the rule (repeatable)")
+@click.option("--text", "-t", required=True, help="What your agent is told when a prompt matches")
+@click.option("--project", "-p", "root", default="", help="Only under this directory (default: everywhere)")
+def guards_add(rule_id, phrases, text, root):
+    """Write a rule by hand: its card shows whenever a prompt contains one of its words."""
+    where = f"^{re.escape(root.rstrip('/'))}(?:/|$)" if root else ""
+    try:
+        added = harness.add_rule(rule_id, list(phrases), text, where)
+    except harness.HarnessError as exc:
+        raise guard_failure(exc)
+    click.echo(f"Added {added}: {len(phrases)} word(s)" + (f", under {root}" if root else ", everywhere"))
+
+
+@guards_group.command("remove")
+@click.argument("rule_id")
+def guards_remove(rule_id):
+    """Delete a rule and everything learned for it."""
+    try:
+        removed = harness.remove_rule(rule_id)
+    except harness.HarnessError as exc:
+        raise guard_failure(exc)
+    click.echo(f"Removed {rule_id}." if removed else f"No rule {rule_id}.")
+
+
+@guards_group.command("off")
+@click.argument("rule_id")
+def guards_off(rule_id):
+    """Switch a rule off: it stays, with its words and its numbers, and does nothing."""
+    try:
+        harness.switch_rule(rule_id, True)
+    except harness.HarnessError as exc:
+        raise guard_failure(exc)
+    click.echo(f"{rule_id} is off. `synapptic guards on {rule_id}` switches it back.")
+
+
+@guards_group.command("on")
+@click.argument("rule_id")
+def guards_on(rule_id):
+    """Switch a rule back on."""
+    try:
+        harness.switch_rule(rule_id, False)
+    except harness.HarnessError as exc:
+        raise guard_failure(exc)
+    click.echo(f"{rule_id} is on.")
+
+
+@guards_group.command("exclude")
+@click.argument("rule_id")
+@click.argument("word")
+def guards_exclude(rule_id, word):
+    """Keep a word out of a rule: taken out of its words, and never proposed for it again."""
+    try:
+        done = harness.exclude_word(rule_id, word)
+    except harness.HarnessError as exc:
+        raise guard_failure(exc)
+    taken = f"taken out of {rule_id} ({done['version']})" if done["removed"] else f"not a word of {rule_id}"
+    click.echo(f"Excluded /{done['pattern']}/: {taken}; never proposed again.")
 
 
 @guards_group.command("excluded")
-@click.option("--project", "-p", help="Project to check")
+@click.option("--project", "-p", help="Project to check (archetype guards)")
 def guards_excluded(project):
-    """List all excluded guards with their reasons."""
+    """What is kept out: words excluded from the rules, and archetype guards excluded with their reasons."""
     from synapptic.benchmark import list_excluded
 
+    try:
+        kept_out = harness.excluded_words()
+    except harness.HarnessError:
+        kept_out = []
+    if kept_out:
+        click.echo("Words kept out of the rules:")
+        for item in kept_out:
+            click.echo(f"  {item['rule_id']}  /{item['regex']}/" + (f"  ({item['phrase']!r})" if item["phrase"] else ""))
+        click.echo("  `synapptic guards include <rule> <word>` puts one back.")
     excluded = list_excluded(project_slug=project)
     if not excluded:
-        click.echo("No excluded guards.")
+        if not kept_out:
+            click.echo("Nothing excluded.")
         return
-
+    click.echo("Archetype guards excluded:")
     for i, g in enumerate(excluded):
         click.echo(f"  {i}. [{g['reason']:9s}] {g['observation'][:90]}")
-
-    click.echo(f"\n{len(excluded)} excluded guard(s). Use 'synapptic guards include <number>' to re-include.")
+    click.echo(f"  {len(excluded)} excluded guard(s). `synapptic guards include <number>` re-includes one.")
 
 
 @guards_group.command("include")
-@click.argument("indices", nargs=-1, type=int)
-@click.option("--project", "-p", help="Project to modify")
-def guards_include(indices, project):
-    """Re-include excluded guards by their index number."""
+@click.argument("items", nargs=-1)
+@click.option("--project", "-p", help="Project to modify (archetype guards)")
+def guards_include(items, project):
+    """Put back what was kept out: `<rule> <word>` for a word, index numbers for archetype guards."""
     from synapptic.benchmark import include_guards
 
-    if not indices:
-        click.echo("Specify guard indices to re-include (from 'synapptic guards excluded').")
+    if not items:
+        raise click.UsageError("name a rule and a word, or archetype guard numbers from `synapptic guards excluded`")
+    if all(item.isdigit() for item in items):
+        included = include_guards([int(item) for item in items], project_slug=project)
+        click.echo(f"Re-included {included} guard(s). Run 'synapptic synthesize' to regenerate.")
         return
-
-    included = include_guards(list(indices), project_slug=project)
-    click.echo(f"Re-included {included} guard(s). Run 'synapptic synthesize' to regenerate.")
+    if len(items) != 2:
+        raise click.UsageError("a word is named by its rule and the word: `synapptic guards include <rule> <word>`")
+    try:
+        done = harness.include_word(items[0], items[1])
+    except harness.HarnessError as exc:
+        raise guard_failure(exc)
+    click.echo(f"Included /{done['pattern']}/ in {done['rule_id']}" + (f" ({done['version']})" if done["version"] else ", it was live already"))
 
 
 @cli.command()
@@ -1295,11 +1325,13 @@ def run_ingest(model, max_tokens, project, min_lines, limit):
     # Step 2: Extract + route
     extracted_count = 0
 
+    learned = []
     for sid in unprocessed:
         if limit and extracted_count >= limit:
             break
 
         path, slug = transcripts[sid]
+        learned.append(path)
         size_bytes = path.stat().st_size
         size_mb = size_bytes / 1024 / 1024
         click.echo(f"  {sid[:8]}... [{slug}] ({size_mb:.1f}MB)", nl=False)
@@ -1372,6 +1404,10 @@ def run_ingest(model, max_tokens, project, min_lines, limit):
         else:
             slug, target, path = entry
             click.echo(f"  [{slug}] → {target}: {path}")
+
+    # Step 6: Learn (the harness: misses in the sessions just processed, then one tuning pass)
+    click.echo("\nStep 5: Learning")
+    run_learning(learned, RULE_WINDOW_DAYS)
 
     click.echo("\nDone.")
 
@@ -1489,16 +1525,29 @@ def checkpoint(session, flush, min_tokens, max_tokens, synthesize_after):
 
 @cli.command()
 def diff():
-    """Show what changed since last profile version."""
+    """What changed: the profiles since their last version, and the rules' words (by the tuner, by your hand)."""
     show_diff(None, "global")
     for slug in list_projects():
         show_diff(slug, slug)
+    try:
+        echo_rule_changes(20)
+    except harness.HarnessError:
+        pass
 
 
 @cli.command()
-def rollback():
-    """Rollback to previous profile version."""
+@click.argument("change_id", required=False)
+def rollback(change_id):
+    """Roll back: with a change id from `synapptic diff`, put a rule's words back; alone, the previous profile version."""
     from synapptic.config import GLOBAL_DIR
+
+    if change_id:
+        try:
+            done = harness.undo(change_id)
+        except (harness.HarnessError, ValueError) as exc:
+            raise click.ClickException(str(exc))
+        click.echo(f"Undid {done['undid']} as {done['id']}: the {done['field']} of {done['rule_id']} are /{done['restored']}/ again")
+        return
 
     history = get_profile_history(project_slug=None)
     if len(history) < 2:
@@ -1552,6 +1601,12 @@ def stats():
 
         pa = load_archetype(project_slug=slug)
         click.echo(f"  archetype: {'yes' if pa else 'no'}" + (f" ({len(pa)} chars)" if pa else ""))
+
+    # The rules' numbers over the window, when the core and its store are there
+    try:
+        echo_rule_stats(RULE_WINDOW_DAYS)
+    except (harness.HarnessError, ValueError):
+        pass
 
     # Project distribution of sessions
     click.echo(f"\nSessions by project:")
@@ -1878,14 +1933,55 @@ def check_dashboard_deps():
         return False
 
 
+DASHBOARD_ACTIONS = ("start", "stop", "restart", "status")
+
+
+def echo_dashboard_status(found):
+    if found["running"]:
+        where = f"pid {found['pid']}" if found["pid"] else "process unknown"
+        since = f", since {time.strftime('%Y-%m-%d %H:%M', time.localtime(found['since']))}" if found["since"] else ""
+        click.echo(f"Dashboard: running at {found['url']} ({where}{since}); log {found['log']}")
+    elif found["pid"]:
+        click.echo(f"Dashboard: not answering at {found['url']}, but pid {found['pid']} holds the port; `synapptic dashboard stop` ends it")
+    else:
+        click.echo(f"Dashboard: not running (`synapptic dashboard start` serves {found['url']})")
+
+
 @cli.command("dashboard")
-@click.option("--host", default="127.0.0.1", help="Address to bind (default: 127.0.0.1, this machine only)")
-@click.option("--port", type=int, default=5200, help="Port (default: 5200)")
-def dashboard_command(host, port):
-    """Start the dashboard: settings and the session browser."""
+@click.argument("action", required=False, default="start", metavar="[start|stop|restart|status]",
+                type=click.Choice([*DASHBOARD_ACTIONS, "serve"]))
+@click.option("--host", default=dashboard_service.DEFAULT_HOST, help="Address to bind (default: 127.0.0.1, this machine only)")
+@click.option("--port", type=int, default=dashboard_service.DEFAULT_PORT, help="Port (default: 5200)")
+def dashboard_command(action, host, port):
+    """The dashboard, settings and the session browser, as a background service: start (the default),
+    stop, restart or status. Its output goes to ~/.synapptic/dashboard.log."""
+    if action == "status":
+        echo_dashboard_status(dashboard_service.status(host, port))
+        return
+    try:
+        if action == "stop":
+            done = dashboard_service.stop(host, port)
+            click.echo(f"Dashboard: stopped (pid {done['pid']})" if done["stopped"] else "Dashboard: not running")
+            return
+        if action == "restart":
+            done = dashboard_service.stop(host, port)
+            if done["stopped"]:
+                click.echo(f"Dashboard: stopped (pid {done['pid']})")
+        if action != "serve":
+            if not check_dashboard_deps():
+                return
+            done = dashboard_service.start(host, port)
+            if done["started"]:
+                click.echo(f"Dashboard: started at {done['url']} (pid {done['pid']}); log {done['log']}")
+            else:
+                click.echo(f"Dashboard: already running at {done['url']}" + (f" (pid {done['pid']})" if done["pid"] else ""))
+            return
+    except dashboard_service.DashboardError as exc:
+        raise click.ClickException(str(exc))
+    # serve: the foreground server that `start` spawns detached (fastapi/uvicorn are the optional
+    # [dashboard] extra: imported only after the check)
     if not check_dashboard_deps():
         return
-    # fastapi/uvicorn are the optional [dashboard] extra: imported only after the check above
     import uvicorn
     from synapptic.dashboard.app import STATIC_DIR, create_app
     if not (STATIC_DIR / "index.html").exists():
