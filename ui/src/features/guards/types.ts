@@ -28,8 +28,68 @@ export interface GuardRow {
   anchor: string;
   why: string;
   projects: string[]; // the indexed projects it applies to; [] = everywhere (Global)
+  benchmark?: RuleVerdict[];   // the rule's benchmark verdicts, newest first (guards.benchmark)
+  benchmark_running?: boolean; // a run is in progress on the server (the page opens its box on load)
   numbers?: GuardNumbers;   // joined on the page from guards.numbers, which arrives after the list
 }
+
+// One arm of the rule's benchmark: the rule on, or the rule off (guards.benchmark).
+export interface VerdictArm {
+  passes: number;
+  valid: number;
+  score: string;          // PASS, FAIL, TIE, UNKNOWN
+  ci_95: [number, number];
+  fired: number;          // runs in which the store saw the rule reach the model
+  reasons: string[];
+  replies: string[];
+}
+
+export interface RuleVerdict {
+  rule: string;
+  scenario: string;
+  tension: string;
+  runs: number;
+  respondent: { provider: string; model: string };
+  judge: { provider: string; model: string };
+  with: VerdictArm;
+  without: VerdictArm;
+  classification: string; // effective, redundant, backfire, ineffective, untestable, unclear
+  fired: number;
+  judge_failures: number;
+  response_failures: number;
+  timestamp: string;
+}
+
+// What the benchmark topic pushes while a rule's benchmark runs: a stage (note), the scenario, each
+// headless reply, each judge verdict, then the end with the verdict, or an error.
+export interface BenchmarkEvent {
+  rule: string;
+  kind?: 'note' | 'scenario' | 'reply' | 'judge';
+  message?: string;       // note
+  run?: number;           // note (an arm's start), reply, judge
+  runs?: number;
+  arm?: 'with' | 'without';
+  scenario?: string;      // scenario
+  tension?: string;
+  session?: string;       // reply: the headless session's id
+  fired?: boolean;        // reply: the store saw the rule reach the model in that session
+  text?: string;          // reply
+  score?: string;         // judge: PASS, FAIL, UNKNOWN
+  reason?: string;
+  done?: boolean;
+  verdict?: RuleVerdict;
+  error?: string;
+}
+
+// What the Run button sends (guards.benchmark): the CLI's choices (a type, not an interface: the request
+// params must index as a plain record).
+export type BenchmarkChoices = {
+  runs: number;
+  runner_provider: string;   // the runner: Claude Code (the hooks run there) or any provider, Ollama included
+  runner_model: string;      // the runner's model
+  judge_provider: string;
+  judge_model: string;
+};
 
 export interface GuardNumbersList {
   days: number;

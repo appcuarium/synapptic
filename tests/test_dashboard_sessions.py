@@ -77,6 +77,20 @@ def test_projects_and_sessions_come_from_the_index_without_file_paths(client, in
     assert str(indexed) not in json.dumps(everything) and "file_path" not in everything[0]
 
 
+def test_a_session_open_in_a_claude_code_process_is_live_while_idle(client, monkeypatch):
+    """An idle session the user sits in is live (operator 2026-11-05): the process list names it (`claude -r
+    <title>` in the project's directory), whatever its transcript's age."""
+    # boundary: process list - the machine's Claude Code processes; one resuming the second session by title
+    monkeypatch.setattr(handlers, "claude_processes", lambda: [(4242, ["-r", "analyze", "the", "releases"])])
+    # boundary: process - that process's working directory, the project the session was indexed under
+    monkeypatch.setattr(handlers, "process_cwd", lambda pid: "/Users/sorin/machine-be" if pid == 4242 else None)
+    monkeypatch.setitem(handlers._open_sessions_cache, "at", 0.0)
+    with client.websocket_connect("/api/ws") as ws:
+        ws.receive_json()
+        listed = request(ws, "a", "sessions.list")["result"]
+    assert {s["session_id"]: s["live"] for s in listed} == {"dc88c6b4": False, "a8f68aa4": True}
+
+
 def test_turns_come_in_pages_with_the_session_stats(client):
     with client.websocket_connect("/api/ws") as ws:
         ws.receive_json()

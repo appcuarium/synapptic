@@ -638,14 +638,27 @@ ANTHROPIC_PRICES = {
 }
 
 
-def call_claude_cli(prompt: str, model: str = "sonnet", temperature: float | None = None, session_id: str | None = None) -> str | None:
+def headless_reply(prompt: str, model: str = "sonnet", cwd: str | None = None,
+                   temperature: float | None = None, tools: str = "") -> tuple[str | None, str | None]:
+    """One fresh headless Claude Code session answering the prompt from `cwd`, with the user's hooks running
+    as they do in any session (the rule benchmark's respondent) and the tools named in `tools` (none by
+    default): (the reply, the session id)."""
+    reset_claude_session()
+    reply = call_claude_cli(prompt, model, temperature=temperature, cwd=cwd, tools=tools)
+    return reply, get_claude_session_id()
+
+
+def call_claude_cli(prompt: str, model: str = "sonnet", temperature: float | None = None, session_id: str | None = None,
+                    cwd: str | None = None, tools: str = "") -> str | None:
     """Call claude -p with JSON output for token/cost tracking.
 
     session_id: reuse an existing session (avoids reloading full context).
+    cwd: the directory the session runs in (the rules scoped to a project apply there).
+    tools: the tools the session may use, comma-separated (none: the extraction's and synthesis's way).
     Returns the session_id in _last_claude_session_id for callers to reuse.
     """
     try:
-        cmd = ["claude", "-p", "--model", model, "--output-format", "json", "--tools", ""]
+        cmd = ["claude", "-p", "--model", model, "--output-format", "json", "--tools", tools]
         if session_id:
             cmd.extend(["--resume", session_id])
         result = subprocess.run(
@@ -654,6 +667,7 @@ def call_claude_cli(prompt: str, model: str = "sonnet", temperature: float | Non
             capture_output=True,
             text=True,
             timeout=300,
+            cwd=cwd,
             # Hooks inherit this: synapptic's own runs must not checkpoint themselves (a Stop hook loop).
             env={**os.environ, INTERNAL_RUN_ENV: "1"},
         )

@@ -7,15 +7,18 @@ the last 4 characters.
 """
 
 import asyncio
+import functools
 import json
 import re
+import subprocess
+import threading
 import time
 from pathlib import Path
 from typing import Awaitable, Callable
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from synapptic import harness, providers
+from synapptic import benchmark, harness, providers
 from synapptic.config import CLAUDE_PROJECTS_DIR
 from synapptic.dashboard import service
 from synapptic.dashboard.hub import Hub
@@ -35,9 +38,12 @@ API_KEY_HINT_LENGTH = 4
 SESSION_PAGE_SIZE = 100
 SESSION_PAGE_MAX = 500
 TOOL_SUMMARY_LENGTH = 160
-# A live session: its transcript was written in the last 5 minutes and the SessionEnd hook has not reported
-# it ended (POST /api/session-ended).
+# A live session: open in a running Claude Code process (operator 2026-11-05: an idle session you sit in is
+# live), or its transcript was written in the last 5 minutes; and the SessionEnd hook has not reported it
+# ended (POST /api/session-ended).
 LIVE_WINDOW_SECONDS = 300
+CLAUDE_PROCESS = re.compile(r"^\s*(\d+)\s+(claude)(?:\s+(.*))?$")
+PROCESS_LIST_TIMEOUT = 5
 # The index columns the browser gets; file_path and project_dir stay on the server.
 PUBLIC_SESSION_FIELDS = ("session_id", "project", "title", "model", "first_timestamp", "last_timestamp",
                          "message_count", "turn_count", "file_size")
@@ -232,6 +238,74 @@ def tail_for(path: Path) -> TranscriptTail:
     return tail
 
 
+def claude_processes() -> list[tuple[int, list[str]]]:
+    """The running Claude Code processes: (pid, the arguments after `claude`), from the process list."""
+    try:
+        listed = subprocess.run(["ps", "-axo", "pid=,command="], capture_output=True, text=True, timeout=PROCESS_LIST_TIMEOUT)
+    except (OSError, subprocess.SubprocessError):
+        return []
+    found = []
+    for line in listed.stdout.splitlines():
+        match = CLAUDE_PROCESS.match(line)
+        if match:
+            found.append((int(match.group(1)), (match.group(3) or "").split()))
+    return found
+
+
+def process_cwd(pid: int) -> str | None:
+    """The working directory of a process (lsof: the `cwd` descriptor's name)."""
+    try:
+        listed = subprocess.run(["lsof", "-a", "-p", str(pid), "-d", "cwd", "-F", "n"], capture_output=True, text=True,
+                                timeout=PROCESS_LIST_TIMEOUT)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    for line in listed.stdout.splitlines():
+        if line.startswith("n"):
+            return line[1:]
+    return None
+
+
+def encoded_project_dir(cwd: str) -> str:
+    """Claude Code's directory name for a working directory: every character outside letters and digits a dash."""
+    return re.sub(r"[^A-Za-z0-9]", "-", cwd)
+
+
+# The open sessions are looked up at most every few seconds (one lsof per process; the list is polled).
+OPEN_SESSIONS_TTL_SECONDS = 10
+_open_sessions_cache: dict = {"at": 0.0, "ids": set()}
+
+
+def open_session_ids(store: SessionStore, processes: list[tuple[int, list[str]]] | None = None) -> set[str]:
+    """The sessions open in a running Claude Code process: the one `--resume <id>` names, the one `-r <title>`
+    names in the process's project, else the project's most recently written session (a fresh `claude`)."""
+    live_lookup = processes is None
+    if live_lookup:
+        if time.time() - _open_sessions_cache["at"] < OPEN_SESSIONS_TTL_SECONDS:
+            return set(_open_sessions_cache["ids"])
+        processes = claude_processes()
+    found = set()
+    for pid, args in processes or []:
+        cwd = process_cwd(pid)
+        if not cwd:
+            continue
+        candidates = store.get_sessions_in_dir(encoded_project_dir(cwd))
+        if not candidates:
+            continue
+        chosen = None
+        if "--resume" in args and args.index("--resume") + 1 < len(args):
+            wanted = args[args.index("--resume") + 1]
+            chosen = next((row for row in candidates if row["session_id"] == wanted), None)
+        elif "-r" in args:
+            title = " ".join(args[args.index("-r") + 1:]).strip()
+            chosen = next((row for row in candidates if (row["title"] or "").strip() == title), None) if title else None
+        if chosen is None:
+            chosen = candidates[0]
+        found.add(chosen["session_id"])
+    if live_lookup:
+        _open_sessions_cache.update(at=time.time(), ids=set(found))
+    return found
+
+
 def read_sessions(project: str | None) -> list[dict]:
     """The index, with every live session brought up to its transcript's latest line (new bytes only)."""
     store = open_index()
@@ -239,7 +313,7 @@ def read_sessions(project: str | None) -> list[dict]:
         recent = recent_transcripts(time.time())
         for path in recent:
             index_transcript(store, path)
-        live = {path.stem for path in recent} - store.get_ended_session_ids()
+        live = ({path.stem for path in recent} | open_session_ids(store)) - store.get_ended_session_ids()
         return [{**public_session(row), "live": row["session_id"] in live}
                 for row in store.get_indexed_sessions(project=project)]
     finally:
@@ -337,6 +411,14 @@ class GuardUndoParams(BaseModel):
 EMPTY_NUMBERS = {"fires": 0, "idle": 0, "misses": 0, "chars": 0, "sessions": 0, "daily": []}
 
 
+def benchmark_history(value) -> list:
+    """The rule's benchmark verdicts as a list, newest first (a verdict stored alone before the history was kept
+    is a list of one)."""
+    if isinstance(value, list):
+        return value
+    return [value] if isinstance(value, dict) else []
+
+
 def guard_view(rule: dict, numbers: dict | None) -> dict:
     """One rule as the browser shows it: the plain export's fields by their labels, plus its numbers. The
     patterns a rule listens for stay out of the page."""
@@ -351,6 +433,7 @@ def guard_view(rule: dict, numbers: dict | None) -> dict:
         "family": bool(family),
         "anchor": family.get("anchor") or "",
         "why": rule.get("why") or "",
+        "benchmark": benchmark_history(rule.get("benchmark")),   # the rule's benchmark verdicts, newest first
         "numbers": {name: numbers[name] for name in EMPTY_NUMBERS} if numbers else dict(EMPTY_NUMBERS),
     }
 
@@ -379,6 +462,7 @@ def read_guards() -> dict:
     roots = project_roots()
     for view in views:
         view["projects"] = [slug for slug, root in roots.items() if view["where"] and rule_applies_under(view["where"], root)]
+        view["benchmark_running"] = view["id"] in benchmark_jobs   # a page opened mid-run opens the run's box
     projects = [{"project": "", "label": "Global", "rules": sum(1 for view in views if not view["where"])}]
     for row in read_projects():
         slug = row["project"]
@@ -486,6 +570,9 @@ RESTART: dict = {"command": None, "log": None}
 def spawn_restart() -> dict:
     if not RESTART["command"]:
         raise MethodError(ErrorCode.INVALID_PARAMS, "this server was not started by a synapptic command; restart it where it runs")
+    # a restart kills the benchmark jobs with the server (an opus run was lost that way, 2026-11-05)
+    if benchmark_jobs:
+        raise MethodError(ErrorCode.INVALID_PARAMS, f"a benchmark is running on {', '.join(sorted(benchmark_jobs))}; stop it or wait for it first")
     service.spawn_detached(RESTART["command"], Path(RESTART["log"]))
     return {"restarting": True}
 
@@ -509,6 +596,116 @@ async def guards_undo(params: dict, hub: Hub) -> dict:
     return done
 
 
+# ----- the benchmark button on a rule ----------------------------------------------------------------
+# One rule, the rule on against the rule off through the harness (benchmark.run_rule_benchmark): a job in the
+# background, its steps pushed on the "benchmark" topic as {rule, message} and its end as {rule, done,
+# verdict} (or {rule, error}), then the rules list pushed again with the verdict on the rule. The respondent
+# is a headless Claude Code session; the judge is the configured provider and model (Settings).
+
+BENCHMARK_TOPIC = "benchmark"
+benchmark_jobs: dict[str, asyncio.Task] = {}   # rule id -> the running job
+benchmark_cancels: dict[str, threading.Event] = {}   # rule id -> set by guards.benchmark.stop; the job stops at its next arm
+# rule id -> the events of its latest run so far (a page opened or reloaded mid-run asks for them:
+# guards.benchmark.state), kept after the run ends until the next one starts
+benchmark_events: dict[str, list[dict]] = {}
+
+
+class GuardBenchmarkParams(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    id: str = Field(min_length=1, max_length=128)
+    runs: int = Field(default=benchmark.RULE_BENCHMARK_RUNS, ge=1, le=9)
+    runner_provider: str = Field(default="", max_length=64)    # the runner: Claude Code (the hooks run there) or any provider
+    runner_model: str = Field(default="", max_length=128)      # the runner's model (Claude Code's: sonnet, opus, fable, haiku)
+    judge_provider: str = Field(default="", max_length=64)     # the judge, as the CLI's --judge-provider / --judge-model
+    judge_model: str = Field(default="", max_length=128)
+
+
+def benchmark_cwd(rule_id: str) -> str | None:
+    """Where the headless session runs: a project the rule applies under, else wherever the server runs."""
+    for rule in read_guards()["rules"]:
+        if rule["id"] == rule_id and rule["where"]:
+            roots = project_roots()
+            return next((roots[slug] for slug in rule["projects"] if slug in roots), None)
+    return None
+
+
+def run_benchmark_job(query: GuardBenchmarkParams, report) -> dict:
+    """The job itself, in a worker thread: `report(event)` hears every step. The judge is the configured
+    provider and model unless the page chose another (the CLI's --judge-provider / --judge-model); the
+    runner is the chosen provider and model (Claude Code by default)."""
+    config = providers.load_config()
+    judge_config = dict(config)
+    if query.judge_provider:
+        judge_config["provider"] = query.judge_provider
+    if query.judge_model:
+        judge_config["model"] = query.judge_model
+    return benchmark.run_rule_benchmark(query.id, config=config, judge_config=judge_config, runs=query.runs,
+                                        cwd=benchmark_cwd(query.id), progress=report, model=query.runner_model or None,
+                                        provider=query.runner_provider or None, cancel=benchmark_cancels.get(query.id))
+
+
+def publish_progress(loop: asyncio.AbstractEventLoop, hub: Hub, rule_id: str, event: dict) -> None:
+    """A step of the job, from its worker thread onto the topic (the hub is the loop's): the event as the
+    benchmark reports it (kind note, scenario, reply or judge) with the rule's id."""
+    shown = {"rule": rule_id, **event}
+    benchmark_events.setdefault(rule_id, []).append(shown)
+    loop.call_soon_threadsafe(hub.publish, BENCHMARK_TOPIC, shown)
+
+
+async def benchmark_job(query: GuardBenchmarkParams, hub: Hub) -> None:
+    rule_id = query.id
+    report = functools.partial(publish_progress, asyncio.get_running_loop(), hub, rule_id)
+    try:
+        verdict = await asyncio.to_thread(guarded, run_benchmark_job, query, report)
+        hub.publish(BENCHMARK_TOPIC, {"rule": rule_id, "done": True, "verdict": verdict})
+        hub.publish(GUARDS_TOPIC, await asyncio.to_thread(guarded, read_guards))
+    except MethodError as failure:
+        hub.publish(BENCHMARK_TOPIC, {"rule": rule_id, "error": failure.message})
+    except Exception as failure:  # noqa: BLE001 - the job must end on the topic whatever broke (the page waits on it)
+        hub.publish(BENCHMARK_TOPIC, {"rule": rule_id, "error": f"{type(failure).__name__}: {failure}"})
+    finally:
+        benchmark_jobs.pop(rule_id, None)
+        benchmark_cancels.pop(rule_id, None)
+
+
+async def guards_benchmark(params: dict, hub: Hub) -> dict:
+    query = validated(GuardBenchmarkParams, params)
+    if query.id in benchmark_jobs:
+        return {"rule": query.id, "started": False, "running": True}
+    benchmark_cancels[query.id] = threading.Event()
+    benchmark_events[query.id] = []
+    benchmark_jobs[query.id] = asyncio.create_task(benchmark_job(query, hub))
+    return {"rule": query.id, "started": True, "running": True}
+
+
+async def guards_benchmark_running(params: dict, hub: Hub) -> dict:
+    """The rules whose benchmark is running right now (a restart would kill them)."""
+    return {"rules": sorted(benchmark_jobs)}
+
+
+async def guards_benchmark_state(params: dict, hub: Hub) -> dict:
+    """A rule's latest run as the page needs it after a reload: whether it is still running and every event
+    so far (the topic carries the rest)."""
+    query = validated(GuardBenchmarkStopParams, params)
+    return {"rule": query.id, "running": query.id in benchmark_jobs, "events": list(benchmark_events.get(query.id, []))}
+
+
+class GuardBenchmarkStopParams(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    id: str = Field(min_length=1, max_length=128)
+
+
+async def guards_benchmark_stop(params: dict, hub: Hub) -> dict:
+    """Stop a rule's running benchmark at its next arm (the headless answer in flight comes back first);
+    what ran so far is kept as a stopped verdict."""
+    query = validated(GuardBenchmarkStopParams, params)
+    cancel = benchmark_cancels.get(query.id)
+    if cancel is None:
+        return {"rule": query.id, "stopped": False, "running": False}
+    cancel.set()
+    return {"rule": query.id, "stopped": True, "running": True}
+
+
 Method = Callable[[dict, Hub], Awaitable[object]]
 METHODS: dict[str, Method] = {
     "config.get": config_get,
@@ -522,6 +719,10 @@ METHODS: dict[str, Method] = {
     "guards.changes": guards_changes,
     "guards.switch": guards_switch,
     "guards.undo": guards_undo,
+    "guards.benchmark": guards_benchmark,
+    "guards.benchmark.stop": guards_benchmark_stop,
+    "guards.benchmark.state": guards_benchmark_state,
+    "guards.benchmark.running": guards_benchmark_running,
     "profile.get": profile_get,
     "server.restart": server_restart,
 }

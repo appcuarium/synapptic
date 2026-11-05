@@ -42,7 +42,8 @@ export function ToggleRow({ id, label, description, note, on, onChange, disabled
 }) {
   return (
     <div className="flex items-center justify-between gap-3">
-      <div className="min-w-0">
+      {/* a step of air between the label and its note (operator, 2026-11-05) */}
+      <div className="min-w-0 flex flex-col gap-1">
         <Described hint={description}>
           <div className="min-w-0 truncate text-[13px] text-fg-muted font-medium" id={id}>{label}</div>
         </Described>

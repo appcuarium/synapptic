@@ -8,6 +8,7 @@ import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
 import type { DashboardConfig } from '@/features/settings/types';
 import { type ThemeChoice, useTheme } from '@/lib/theme';
 import { useWs, useWsQuery } from '@/lib/ws/react';
+import { useBrand } from './nav';
 
 // Restart: the server restarts itself where it runs (`synapptic dashboard restart`, or the author's); the page
 // waits for the old one to go, polls /api/health until the new one answers, then reloads.
@@ -45,6 +46,7 @@ const THEME_OPTIONS: { choice: ThemeChoice; label: string; Icon: typeof SunIcon 
 
 export function TopBar() {
   const [theme, setTheme] = useTheme();
+  const brand = useBrand();
   const { toggleSidebar } = useSidebar();
   const client = useWs();
   const { data: config } = useWsQuery<DashboardConfig>('config.get', {}, 'config');
@@ -82,7 +84,7 @@ export function TopBar() {
       </Described>
       <Link to="/" className="flex items-center gap-2.5 md:w-[calc(3.5rem-16px)] lg:w-[calc(14rem-16px)] shrink-0">
         <LogoIcon className="text-primary" />
-        <span className="text-[15px] font-semibold text-fg md:hidden lg:inline">Synapptic</span>
+        <span className="text-[15px] font-semibold text-fg md:hidden lg:inline">{brand}</span>
         <span className="text-[13px] text-fg-muted hidden lg:inline">0.1.0b6</span>
       </Link>
       <div className="ml-auto flex items-center gap-3 text-[13px] text-fg-2 min-w-0">

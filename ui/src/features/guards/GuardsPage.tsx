@@ -6,19 +6,23 @@
 // what opens under a rule on request (`details`), and gets the same page.
 // Built on the Settings page's pieces (TileStrip, ToggleRow, the buttons), the session browser's stat cells.
 import { useQueryClient } from '@tanstack/react-query';
-import { type ReactNode, useState } from 'react';
+import { type ReactNode, useCallback, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { PageHeader } from '@/components/layout/PageHeader';
 import { ToggleRow } from '@/components/machine/OnOffToggle';
 import { TileLabel } from '@/components/machine/TileLabel';
 import { TileStrip } from '@/components/machine/TileStrip';
 import { Button } from '@/components/ui/button';
+import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
 import { StatCell } from '@/features/sessions/SessionsPage';
 import { formatCount } from '@/features/sessions/format';
 import { useWsMutation, useWsQuery } from '@/lib/ws/react';
 import { changeSummary, formatWhen } from './format';
 import { RuleChart } from './RuleChart';
-import type { GuardChange, GuardNumbers, GuardNumbersList, GuardRow, GuardsList, ProfileView } from './types';
+import { BenchmarkPanel } from './BenchmarkPanel';
+import { type Band, ratioTone, ruleOnBand, ruleOnTone, verdictTone } from './tone';
+import type { BenchmarkChoices, GuardChange, GuardNumbers, GuardNumbersList, GuardRow, GuardsList, ProfileView, RuleVerdict } from './types';
+import { useBenchmarkRun } from './useBenchmark';
 
 // The Settings page's button corners (template tokens for the rest).
 const buttonClasses = 'rounded-xs shadow-none';
@@ -46,19 +50,60 @@ function appliesTo(rule: GuardRow, project: string): boolean {
   return project === GLOBAL ? rule.projects.length === 0 && !rule.where : rule.projects.includes(project);
 }
 
+// The scope under a guard's name as the strip names it (operator, 2026-11-05): the project's card label,
+// "Global" for a rule everywhere, "Core" for synapptic's own; a project the index does not know keeps its pattern.
 function scopeOf(rule: GuardRow): string {
-  return rule.where ? `under ${rule.where}` : 'everywhere';
+  if (rule.projects.length > 0) return rule.projects.map((p) => (p === '__core__' ? 'Core' : p)).join(', ');
+  return rule.where ? `under ${rule.where}` : 'Global';
 }
 
-function RuleBlock<R extends GuardRow>({ rule, days, onSwitch, disabled, extras, details, detailsLabel }: {
-  rule: R; days: number; onSwitch: (off: boolean) => void; disabled: boolean;
+// A rule's label wears its effectiveness (operator 2026-11-05): the rule-on colour of its latest benchmark
+// run (teal keeps the label's own fill), the outline alone for a rule never benchmarked or whose latest run
+// measured nothing.
+function labelTone(verdicts: RuleVerdict[]): 'amber' | 'rose' | 'outline' | undefined {
+  const latest = verdicts[0];
+  const band: Band = latest ? ruleOnBand(latest.with, latest.without) : 'none';
+  return band === 'teal' ? undefined : band === 'none' ? 'outline' : band;
+}
+
+// The strip of a rule's benchmark runs, Machine's autoperf iterations: one toggle per run, newest first,
+// the picked one in the accent; the picked run's numbers sit in the stats row and its scenario under it.
+const runToggleClasses =
+  'h-8 shrink-0 px-3 rounded-md border border-line bg-transparent text-[13px] font-normal text-fg-subtle shadow-none ' +
+  'data-[state=on]:border-primary data-[state=on]:text-primary data-[state=on]:bg-transparent hover:bg-control-hover';
+
+function RunsStrip({ verdicts, picked, onPick }: { verdicts: RuleVerdict[]; picked: number; onPick: (index: number) => void }) {
+  return (
+    <ToggleGroup type="single" spacing={2} aria-label="Benchmark runs" value={String(picked)}
+      onValueChange={(value) => { if (value) onPick(Number(value)); }} className="flex justify-start overflow-x-auto strip-scroll">
+      {verdicts.map((verdict, index) => (
+        <ToggleGroupItem key={verdict.timestamp} value={String(index)} className={runToggleClasses}>
+          {/* the verdict word in its own colour, the panel's judge line's way (operator 2026-11-05);
+              one span for the line, or the toggle's flex gap opens around the word */}
+          <span>run {verdicts.length - index} · <span className={verdictTone(verdict.classification)}>{verdict.classification}</span> · {formatWhen(Date.parse(verdict.timestamp) / 1000)}</span>
+        </ToggleGroupItem>
+      ))}
+    </ToggleGroup>
+  );
+}
+
+function RuleBlock<R extends GuardRow>({ rule, days, onSwitch, onBenchmark, onBenchmarkStop, onBenchmarkDone, disabled, extras, details, detailsLabel }: {
+  rule: R; days: number; onSwitch: (off: boolean) => void; onBenchmark: (choices: BenchmarkChoices) => void;
+  onBenchmarkStop: () => void; onBenchmarkDone: () => void; disabled: boolean;
   extras?: (rule: R) => ReactNode; details?: (rule: R) => ReactNode; detailsLabel: string;
 }) {
   const [open, setOpen] = useState(false);
+  const [benchOpen, setBenchOpen] = useState(Boolean(rule.benchmark_running));   // a run in progress opens its box
+  const [bench, startBench] = useBenchmarkRun(rule.id, onBenchmarkDone);
+  const blockRef = useRef<HTMLDivElement>(null);   // Run brings the rule to the top of the page (under the bar)
   const n = rule.numbers;
+  // the rule's benchmark runs, newest first; the picked one's numbers sit beside the rule's own
+  const verdicts = rule.benchmark ?? [];
+  const [picked, setPicked] = useState(0);
+  const verdict = verdicts[Math.min(picked, Math.max(0, verdicts.length - 1))];
   return (
-    <div className="bg-page flex flex-col gap-3 px-4 py-4">
-      <ToggleRow id={`guard-${rule.id}`} label={<TileLabel>{rule.id}</TileLabel>} note={scopeOf(rule)} description={scopeOf(rule)}
+    <div ref={blockRef} className="bg-page flex flex-col gap-3 px-4 py-4 scroll-mt-12">
+      <ToggleRow id={`guard-${rule.id}`} label={<TileLabel tone={labelTone(verdicts)}>{rule.id}</TileLabel>} note={scopeOf(rule)} description={scopeOf(rule)}
         on={!rule.off} onChange={(on) => onSwitch(!on)} disabled={disabled || Boolean(rule.core)} />
       {(rule.context || rule.message) && (
         <p className="text-[13px] text-fg-subtle">{rule.context || rule.message}</p>
@@ -73,18 +118,54 @@ function RuleBlock<R extends GuardRow>({ rule, days, onSwitch, disabled, extras,
             <StatCell label="idle" value={formatCount(n.idle)} sub="shown, not needed" />
             {rule.family && <StatCell label="missed" value={formatCount(n.misses)} sub={rule.anchor ? `not shown for ${rule.anchor}` : 'not shown'} />}
             <StatCell label="characters" value={formatCount(n.chars)} sub="read by the agent" />
+            {/* the picked benchmark run, in the same row (operator 2026-11-05): the two arms and the verdict */}
+            {verdict && (
+              <>
+                <StatCell label="rule on" value={`${verdict.with.passes}/${verdict.with.valid}`}
+                  valueClassName={ruleOnTone(verdict.with, verdict.without)}
+                  sub={`complied with the rule on; the rule reached the model in ${verdict.fired} of ${verdict.runs} runs`} />
+                <StatCell label="rule off" value={`${verdict.without.passes}/${verdict.without.valid}`}
+                  valueClassName={ratioTone(verdict.without.passes, verdict.without.valid)} sub="complied with the rule off" />
+                <StatCell label="verdict" value={verdict.classification} valueClassName={verdictTone(verdict.classification)}
+                  sub={`majority vote over ${verdict.runs} runs per arm · judge ${verdict.judge.model}, runner ${verdict.respondent.model}`} />
+              </>
+            )}
           </div>
         </>
       ) : (
         <p className="text-xs text-fg-faint">numbers on their way…</p>
       )}
-      {details && (
+      {verdicts.length > 0 && verdict && (
+        <>
+          <RunsStrip verdicts={verdicts} picked={picked} onPick={setPicked} />
+          <pre className="whitespace-pre-wrap font-sans text-[13px] text-fg-subtle">{verdict.scenario}</pre>
+          {verdict.tension && <p className="text-xs text-fg-faint">tension: {verdict.tension}</p>}
+        </>
+      )}
+      {/* the rule's actions: its benchmark (the rule on against the rule off, through the harness; not for
+          synapptic's own rules), and what a dashboard built on this one opens under it */}
+      {(details || !rule.core) && (
         <div className="flex items-start justify-between gap-3">
-          <span className="text-xs text-fg-faint">{open ? `${detailsLabel.toLowerCase()} of ${rule.id}, newest first` : ''}</span>
-          <Button variant="secondary" className={buttonClasses} onClick={() => setOpen(!open)} aria-expanded={open}>
-            {open ? `Hide ${detailsLabel.toLowerCase()}` : detailsLabel}
-          </Button>
+          <span className="text-xs text-fg-faint">
+            {bench.running ? 'benchmark running' : open ? `${detailsLabel.toLowerCase()} of ${rule.id}, newest first` : ''}
+          </span>
+          <span className="flex items-center gap-2 shrink-0">
+            {!rule.core && (
+              <Button variant="secondary" className={buttonClasses} onClick={() => setBenchOpen(!benchOpen)} aria-expanded={benchOpen}>
+                {benchOpen ? 'Hide benchmark' : 'Benchmark'}
+              </Button>
+            )}
+            {details && (
+              <Button variant="secondary" className={buttonClasses} onClick={() => setOpen(!open)} aria-expanded={open}>
+                {open ? `Hide ${detailsLabel.toLowerCase()}` : detailsLabel}
+              </Button>
+            )}
+          </span>
         </div>
+      )}
+      {benchOpen && !rule.core && (
+        <BenchmarkPanel run={bench} onStop={onBenchmarkStop}
+          onRun={(choices) => { startBench(); onBenchmark(choices); blockRef.current?.scrollIntoView({ block: 'start', behavior: 'smooth' }); }} />
       )}
       {details && open && details(rule)}
     </div>
@@ -135,13 +216,17 @@ export function GuardsPage<R extends GuardRow = GuardRow>({
   const profile = useWsQuery<ProfileView>('profile.get', { project });
   const changes = useWsQuery<GuardChange[]>(CHANGES_QUERY);
   const queryClient = useQueryClient();
-  const refresh = () => {
+  // stable: each rule block's benchmark subscription takes it as its "done" callback
+  const refresh = useCallback(() => {
     queryClient.invalidateQueries({ queryKey: [CHANGES_QUERY] });
     queryClient.invalidateQueries({ queryKey: [rulesMethod] });
     queryClient.invalidateQueries({ queryKey: [numbersMethod] });
-  };
+  }, [queryClient, rulesMethod, numbersMethod]);
   const switchRule = useWsMutation<GuardsList, { id: string; off: boolean }>('guards.switch', { onSuccess: refresh });
   const undo = useWsMutation<Record<string, unknown>, { id: string }>('guards.undo', { onSuccess: refresh });
+  // the job runs on the server; its steps arrive on the benchmark topic and the list is pushed when it ends
+  const benchmark = useWsMutation<Record<string, unknown>, BenchmarkChoices & { id: string }>('guards.benchmark');
+  const stopBenchmark = useWsMutation<Record<string, unknown>, { id: string }>('guards.benchmark.stop');
 
   if (guards.error) {
     return (
@@ -212,7 +297,9 @@ export function GuardsPage<R extends GuardRow = GuardRow>({
         {shown.map((rule) => (
           <RuleBlock key={rule.id} rule={rule} days={days} disabled={busy}
             extras={extras} details={details} detailsLabel={detailsLabel}
-            onSwitch={(off) => switchRule.mutate({ id: rule.id, off })} />
+            onSwitch={(off) => switchRule.mutate({ id: rule.id, off })}
+            onBenchmark={(choices) => benchmark.mutate({ id: rule.id, ...choices })}
+            onBenchmarkStop={() => stopBenchmark.mutate({ id: rule.id })} onBenchmarkDone={refresh} />
         ))}
       </div>
 

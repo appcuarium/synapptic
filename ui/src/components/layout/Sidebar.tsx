@@ -3,14 +3,14 @@
 import { type MouseEvent, useState } from 'react';
 import { Link, NavLink, useLocation, useSearchParams } from 'react-router-dom';
 import {
-  Sidebar, SidebarContent, SidebarMenu, SidebarMenuButton, SidebarMenuItem, useSidebar,
+  Sidebar, SidebarContent, SidebarFooter, SidebarMenu, SidebarMenuButton, SidebarMenuItem, useSidebar,
 } from '@/components/ui/sidebar';
 import { Described } from '@/components/machine/Described';
 import { LIVE_REFRESH_MS, type ProjectRow } from '@/features/sessions/types';
 import { Popover, PopoverAnchor, PopoverContent } from '@/components/ui/popover';
 import { cn } from '@/lib/cn';
 import { useWsQuery } from '@/lib/ws/react';
-import { useNavItems } from './nav';
+import { type NavItem, useNavItems } from './nav';
 
 const itemClasses =
   'h-10 touch:h-12 gap-3 px-4 rounded-none border-l-2 border-transparent text-[15px] font-normal text-fg-muted ' +
@@ -76,41 +76,44 @@ export function AppSidebar() {
     setProjectsOpen(onSessions ? !projectsOpen : true);
     setOpenMobile(false);
   };
+  const entries = (items: NavItem[]) => items.map(({ to, label, Icon, end }) => (
+    <SidebarMenuItem key={to}>
+      {to === '/sessions' && onRail && (
+        <Popover open={flyoutOpen} onOpenChange={setFlyoutOpen}>
+          <PopoverAnchor className="absolute inset-0 pointer-events-none" />
+          <PopoverContent side="right" align="start" sideOffset={0} aria-label="Projects"
+            className="w-56 p-0 py-2 rounded-none border-line bg-sidebar shadow-lg">
+            <ProjectNav flyout onPick={() => setFlyoutOpen(false)} />
+          </PopoverContent>
+        </Popover>
+      )}
+      <SidebarMenuButton asChild isActive={isActive(pathname, to, end)} tooltip={label} className={itemClasses}>
+        {/* aria-label: on the rail the visible label is hidden, the link still needs its name */}
+        <NavLink to={to} end={end} onClick={to === '/sessions' ? onSessionsClick : () => setOpenMobile(false)}
+          aria-label={label}
+          aria-expanded={to === '/sessions' ? (onRail ? flyoutOpen : onSessions && projectsOpen) : undefined}>
+          <Icon />
+          <span>{label}</span>
+          {to === '/sessions' && (
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true"
+              className="ml-auto size-3.5! transition-transform group-data-[collapsible=icon]:hidden"
+              style={{ transform: onSessions && projectsOpen ? 'rotate(90deg)' : '' }}><path d="M9 6l6 6-6 6" /></svg>
+          )}
+        </NavLink>
+      </SidebarMenuButton>
+      {to === '/sessions' && onSessions && projectsOpen && <ProjectNav onPick={() => setOpenMobile(false)} />}
+    </SidebarMenuItem>
+  ));
   return (
     // Below the 48px top bar instead of full height (shadcn's sticky-header pattern).
     <Sidebar collapsible="icon" className="top-12 h-[calc(100svh-3rem)]!">
       <SidebarContent className="py-2 gap-0">
-        <SidebarMenu className="gap-0">
-          {NAV.map(({ to, label, Icon, end }) => (
-            <SidebarMenuItem key={to}>
-              {to === '/sessions' && onRail && (
-                <Popover open={flyoutOpen} onOpenChange={setFlyoutOpen}>
-                  <PopoverAnchor className="absolute inset-0 pointer-events-none" />
-                  <PopoverContent side="right" align="start" sideOffset={0} aria-label="Projects"
-                    className="w-56 p-0 py-2 rounded-none border-line bg-sidebar shadow-lg">
-                    <ProjectNav flyout onPick={() => setFlyoutOpen(false)} />
-                  </PopoverContent>
-                </Popover>
-              )}
-              <SidebarMenuButton asChild isActive={isActive(pathname, to, end)} tooltip={label} className={itemClasses}>
-                {/* aria-label: on the rail the visible label is hidden, the link still needs its name */}
-                <NavLink to={to} end={end} onClick={to === '/sessions' ? onSessionsClick : () => setOpenMobile(false)}
-                  aria-label={label}
-                  aria-expanded={to === '/sessions' ? (onRail ? flyoutOpen : onSessions && projectsOpen) : undefined}>
-                  <Icon />
-                  <span>{label}</span>
-                  {to === '/sessions' && (
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true"
-                      className="ml-auto size-3.5! transition-transform group-data-[collapsible=icon]:hidden"
-                      style={{ transform: onSessions && projectsOpen ? 'rotate(90deg)' : '' }}><path d="M9 6l6 6-6 6" /></svg>
-                  )}
-                </NavLink>
-              </SidebarMenuButton>
-              {to === '/sessions' && onSessions && projectsOpen && <ProjectNav onPick={() => setOpenMobile(false)} />}
-            </SidebarMenuItem>
-          ))}
-        </SidebarMenu>
+        <SidebarMenu className="gap-0">{entries(NAV.filter((item) => !item.bottom))}</SidebarMenu>
       </SidebarContent>
+      {/* the items pinned to the foot (Settings, operator 2026-11-05): shadcn's footer, the same menu */}
+      <SidebarFooter className="p-0 py-2">
+        <SidebarMenu className="gap-0">{entries(NAV.filter((item) => item.bottom))}</SidebarMenu>
+      </SidebarFooter>
     </Sidebar>
   );
 }

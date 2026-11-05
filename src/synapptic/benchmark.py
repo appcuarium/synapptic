@@ -11,6 +11,7 @@ Confidence intervals assume test independence (guards may be correlated in pract
 """
 
 import hashlib
+import functools
 import json
 import random
 import re
@@ -20,7 +21,7 @@ from datetime import datetime, timezone
 
 from synapptic.config import BENCHMARKS_DIR
 from synapptic.core import require_core
-from synapptic.providers import call_llm, estimate_tokens, get_claude_session_id, get_tpm_headroom, is_daily_limit_hit, load_config, _resolve_limits
+from synapptic.providers import PROVIDERS, call_llm, estimate_tokens, get_claude_session_id, get_tpm_headroom, headless_reply, is_daily_limit_hit, load_config, _resolve_limits
 from synapptic.state import load_archetype, load_profile, save_profile
 
 CACHE_FORMAT_VERSION = 4
@@ -1221,3 +1222,186 @@ def format_results(results: dict) -> str:
         lines.append(f"  {icon} [{wg['score']:4s}/{wog['score']:4s}]{run_info}{jf_info} [{t.get('category','?')[:12]:12s}] {t['rule'][:60]}")
 
     return "\n".join(lines)
+
+
+# ----- one rule, the rule on against the rule off --------------------------------------------------------
+#
+# The benchmark button on a rule (operator, 2026-11-04). The two arms go through the harness itself: the
+# scenario is answered by a fresh headless Claude Code session with the user's hooks running, once with the
+# rule on and once with the rule switched off in the store (the loader skips a rule that is off), so no
+# control arm is assembled. The off arm switches the rule off for the user's live sessions for its length,
+# which the progress says. The on arm counts only when the store shows the rule reached the model in that
+# session; the judge scores both replies as in the full benchmark, the vote and the classification are the
+# same. Synapptic's own rules are never benchmarked here.
+
+RULE_BENCHMARK_RUNS = 3
+RULE_RESPONDENT_PROVIDER = "claude-cli"
+RULE_RESPONDENT_DEFAULT_MODEL = "sonnet"
+# The headless session may read the project (a scenario about its code gets a real answer, not "give me
+# file access"), never write or run: the reading tools only (operator 2026-11-05).
+RULE_RESPONDENT_TOOLS = "Read,Grep,Glob"
+STOPPED = "stopped"
+
+
+class BenchmarkStopped(Exception):
+    """The user stopped the run; what ran so far is kept as a stopped verdict."""
+
+
+def respondent_model(config: dict, provider: str = RULE_RESPONDENT_PROVIDER) -> str:
+    """The runner's model: the configured one when the configured provider is the runner's, else the
+    provider's default (Claude Code's: sonnet)."""
+    if config.get("provider") == provider and config.get("model"):
+        return config["model"]
+    if provider == RULE_RESPONDENT_PROVIDER:
+        return RULE_RESPONDENT_DEFAULT_MODEL
+    return PROVIDERS.get(provider, {}).get("default_model", "")
+
+
+def api_reply(prompt: str, model: str, cwd: str | None, config: dict, temperature: float | None) -> tuple[str | None, None]:
+    """A runner without hooks (a model on Ollama or an API): one call through the provider, no session."""
+    return call_llm(prompt, config={**config, "model": model}, temperature=temperature), None
+
+
+def generate_rule_scenario(rule_id: str, config: dict) -> dict | None:
+    """One adversarial scenario for the rule, carrying one of its phrases, from the generation model."""
+    core = require_core()
+    raw = call_llm(core.harness_benchmark_prompt(rule_id), config=config, temperature=0)
+    if not raw:
+        return None
+    cases = _parse_test_cases_from_raw(raw)
+    return cases[0] if cases else None
+
+
+def run_rule_benchmark(rule_id: str, config: dict | None = None, judge_config: dict | None = None,
+                       runs: int = RULE_BENCHMARK_RUNS, temperature: float | None = 0.1, cwd: str | None = None,
+                       progress=None, respond=None, scenario: dict | None = None, model: str | None = None,
+                       cancel=None, provider: str | None = None) -> dict:
+    """The verdict on one rule: {rule, scenario, tension, runs, respondent, judge, with, without,
+    classification, fired, timestamp}, recorded with the rule in the store and saved under the benchmarks
+    directory. The runner is `provider` (Claude Code by default) with `model` or the configured one: a
+    headless Claude Code session has the user's hooks, so the rule reaches it through the harness and the
+    store says whether it did; any other provider has no hooks, so the on arm gets the rule's text ahead of
+    the scenario from the benchmark itself and the store is never switched (operator 2026-11-05).
+    `respond(prompt, model, cwd)` -> (reply, session id) answers each arm (the default runs the runner);
+    `progress(event)` hears every step: {kind: note, message} for a stage, {kind: scenario, scenario,
+    tension}, {kind: reply, run, arm, session, fired, text} for each answer, {kind: judge, run, arm, score,
+    reason} for each verdict on it."""
+    core = require_core()
+    config = config or load_config()
+    judge_config = judge_config or config
+    say = progress or (lambda event: None)
+    provider = provider or RULE_RESPONDENT_PROVIDER
+    hooked = provider == RULE_RESPONDENT_PROVIDER
+    if hooked:
+        answer = respond or functools.partial(headless_reply, tools=RULE_RESPONDENT_TOOLS)
+    else:
+        answer = respond or functools.partial(api_reply, config={**config, "provider": provider}, temperature=temperature)
+
+    say({"kind": "note", "message": "generating the scenario"})
+    case = scenario or generate_rule_scenario(rule_id, config)
+    if not case:
+        raise ValueError(f"no scenario came back for {rule_id}")
+    say({"kind": "scenario", "scenario": case["scenario"], "tension": case.get("tension", "")})
+    model = model or respondent_model(config, provider)
+    order_rng = random.Random(rule_id)
+    run_orders = [True, False] + [order_rng.random() < 0.5 for _ in range(max(0, runs - 2))]
+    order_rng.shuffle(run_orders)
+    state = {
+        "rule": rule_id, "case": case, "model": model, "cwd": cwd, "runs": runs, "answer": answer, "say": say,
+        "hooked": hooked, "context": None if hooked else core.harness_rule_context(rule_id),
+        "judge_config": judge_config, "judge_failures": 0, "response_failures": 0, "cancel": cancel,
+        "with": {"passes": 0, "valid": 0, "reasons": [], "fired": 0, "replies": []},
+        "without": {"passes": 0, "valid": 0, "reasons": [], "fired": 0, "replies": []},
+    }
+    stopped = False
+    try:
+        for run, with_first in enumerate(run_orders[:runs]):
+            for name, on in (("with", True), ("without", False)) if with_first else (("without", False), ("with", True)):
+                _run_arm(state, name, on, run)
+    except BenchmarkStopped:
+        # the user stopped it: what ran so far is the verdict, marked stopped
+        stopped = True
+        say({"kind": "note", "message": "stopped"})
+
+    arms = {name: state[name] for name in ("with", "without")}
+    for name in arms:
+        arms[name]["score"] = core.majority_vote(arms[name]["passes"], arms[name]["valid"])
+        arms[name]["ci_95"] = list(core.binomial_ci(arms[name]["passes"], arms[name]["valid"], 1.96))
+    classification = core.classify(arms["with"]["score"], arms["without"]["score"], arms["with"]["valid"], arms["without"]["valid"])
+    if arms["with"]["fired"] == 0:
+        # the scenario never brought the rule up: the on arm measured nothing
+        classification = "untestable"
+    if stopped:
+        classification = STOPPED
+    verdict = {
+        "rule": rule_id,
+        "scenario": case["scenario"],
+        "tension": case.get("tension", ""),
+        "runs": runs,
+        "respondent": {"provider": provider, "model": model},
+        "judge": {"provider": judge_config.get("provider"), "model": judge_config.get("model")},
+        "with": arms["with"],
+        "without": arms["without"],
+        "classification": classification,
+        "fired": arms["with"]["fired"],
+        "judge_failures": state["judge_failures"],
+        "response_failures": state["response_failures"],
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+    say({"kind": "note", "message": "recording the verdict"})
+    core.harness_record_verdict(rule_id, json.dumps(verdict))
+    save_rule_benchmark(verdict)
+    return verdict
+
+
+def _run_arm(state: dict, name: str, on: bool, run: int) -> None:
+    """One arm of one run. A hooked runner (Claude Code): the rule switched as the arm needs (and back on
+    whatever happens), the headless session's reply, whether the store saw the rule in that session. A runner
+    without hooks: the rule's text ahead of the scenario on the on arm, the bare scenario on the off arm. Then
+    the judge's score."""
+    core = require_core()
+    rule_id, case, say = state["rule"], state["case"], state["say"]
+    if state["cancel"] is not None and state["cancel"].is_set():
+        raise BenchmarkStopped()
+    say({"kind": "note", "run": run + 1, "runs": state["runs"], "arm": name,
+         "message": f"run {run + 1} of {state['runs']}: the rule {'on' if on else 'off'}"
+         + ("" if on or not state["hooked"] else " (off for your live sessions until this reply comes back)")})
+    if state["hooked"]:
+        # the store's switch, through the core (the plumbing's wrapper lives in harness.py, which imports this module)
+        core.harness_switch_rule(rule_id, not on)
+        try:
+            reply, session = state["answer"](case["scenario"], state["model"], state["cwd"])
+        finally:
+            core.harness_switch_rule(rule_id, False)
+    else:
+        prompt = f"{state['context']}\n\n{case['scenario']}" if on else case["scenario"]
+        reply, session = state["answer"](prompt, state["model"], state["cwd"])
+    arm = state[name]
+    if not reply:
+        state["response_failures"] += 1
+        say({"kind": "note", "run": run + 1, "arm": name, "message": "no reply came back"})
+        return
+    fired = (bool(session) and core.harness_rule_fired(session, rule_id)) if state["hooked"] else on
+    arm["fired"] += int(fired)
+    arm["replies"].append(reply[:400])
+    say({"kind": "reply", "run": run + 1, "arm": name, "session": session or "", "fired": fired, "text": reply})
+    verdict = score_response(reply, case, state["judge_config"], temperature=0)
+    say({"kind": "judge", "run": run + 1, "arm": name, "score": verdict["score"], "reason": verdict["reason"]})
+    if verdict["score"] == "UNKNOWN":
+        state["judge_failures"] += 1
+        return
+    arm["valid"] += 1
+    if verdict["score"] == "PASS":
+        arm["passes"] += 1
+    arm["reasons"].append(verdict["reason"])
+
+
+def save_rule_benchmark(verdict: dict):
+    """The verdict as a file under the benchmarks directory: rules/{rule}_{timestamp}.json."""
+    target = BENCHMARKS_DIR / "rules"
+    target.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now(timezone.utc).strftime("%Y-%m-%d_%H%M%S")
+    path = target / f"{_safe_name(verdict['rule'])}_{stamp}.json"
+    with open(path, "w") as f:
+        json.dump(verdict, f, indent=2)
+    return path
