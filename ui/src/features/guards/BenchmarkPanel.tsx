@@ -5,10 +5,8 @@
 // fieldClasses, labelClasses), the guards page's buttons and the author timeline's step rows. The choice
 // fields and the streaming box are their own pieces: the Benchmark page runs the same over a scope.
 import { type ReactNode, useEffect, useRef, useState } from 'react';
-import { fieldClasses, labelClasses } from '@/components/machine/field';
+import { NumberStepper, SettingRow, SettingSelect, settingsGridClasses } from '@/components/machine/SettingsForm';
 import { Button } from '@/components/ui/button';
-import { Label } from '@/components/ui/label';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import type { DashboardConfig, ProviderInfo } from '@/features/settings/types';
 import { useWsQuery } from '@/lib/ws/react';
 import type { BenchmarkChoices, BenchmarkEvent } from './types';
@@ -19,7 +17,12 @@ const buttonClasses = 'rounded-xs shadow-none';
 // The runner by default: a headless Claude Code session, the one runner the user's hooks run in. Any other
 // provider (Ollama included) gets the rule's text from the benchmark itself (operator 2026-11-05).
 export const DEFAULT_RUNNER_PROVIDER = 'claude-cli';
-const RUN_COUNTS = [1, 3, 5, 7, 9];
+// Any provider is a runner (operator 2026-11-06): Claude Code answers with the user's own hooks; every other
+// one has none, so Synapptic runs its prompt hook around it and the rule reaches it the same way.
+const OWN_HOOKS_NOTE = 'your hooks';
+const WRAPPED_NOTE = 'through Synapptic’s hook';
+const MIN_RUNS = 1;
+const MAX_RUNS = 9;
 const DEFAULT_RUNS = 3;
 // the streaming box: half the viewport, opened when the run starts
 const LOG_HEIGHT = '50vh';
@@ -130,53 +133,30 @@ export function BenchmarkChoiceFields({ onChange, children }: { onChange: (choic
     onChange(ready ? { runs, runner_provider: runnerProvider, runner_model: runnerModelId, judge_provider: judgeProviderId, judge_model: judgeModelId } : null);
   }, [onChange, ready, runs, runnerProvider, runnerModelId, judgeProviderId, judgeModelId]);
 
+  // Machine's settings rows (operator 2026-11-06): the label and its line on the left, the control on the right
   return (
-    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-3 text-sm">
-      <div className="flex flex-col gap-1">
-        <Label htmlFor="bench-runner-provider" className={labelClasses}>Runner provider</Label>
-        <Select value={runnerProvider} onValueChange={(id) => { setRunnerProvider(id); setRunnerModel(''); }}>
-          <SelectTrigger id="bench-runner-provider" className={fieldClasses}><SelectValue /></SelectTrigger>
-          <SelectContent className="text-muted-foreground">
-            {providerList.map((p) => <SelectItem key={p.id} value={p.id} className="focus:text-muted-foreground">{p.name}</SelectItem>)}
-          </SelectContent>
-        </Select>
-      </div>
-      <div className="flex flex-col gap-1">
-        <Label htmlFor="bench-runner" className={labelClasses}>Runner model</Label>
-        <Select value={runnerModelId} onValueChange={setRunnerModel}>
-          <SelectTrigger id="bench-runner" className={fieldClasses}><SelectValue /></SelectTrigger>
-          <SelectContent className="text-muted-foreground">
-            {runnerModels.map((m) => <SelectItem key={m.id} value={m.id} className="focus:text-muted-foreground">{m.label}</SelectItem>)}
-          </SelectContent>
-        </Select>
-      </div>
-      <div className="flex flex-col gap-1">
-        <Label htmlFor="bench-judge-provider" className={labelClasses}>Judge provider</Label>
-        <Select value={judgeProviderId} onValueChange={(id) => { setJudgeProvider(id); setJudgeModel(''); }}>
-          <SelectTrigger id="bench-judge-provider" className={fieldClasses}><SelectValue /></SelectTrigger>
-          <SelectContent className="text-muted-foreground">
-            {providerList.map((p) => <SelectItem key={p.id} value={p.id} className="focus:text-muted-foreground">{p.name}</SelectItem>)}
-          </SelectContent>
-        </Select>
-      </div>
-      <div className="flex flex-col gap-1">
-        <Label htmlFor="bench-judge-model" className={labelClasses}>Judge model</Label>
-        <Select value={judgeModelId} onValueChange={setJudgeModel}>
-          <SelectTrigger id="bench-judge-model" className={fieldClasses}><SelectValue /></SelectTrigger>
-          <SelectContent className="text-muted-foreground">
-            {models.map((m) => <SelectItem key={m.id} value={m.id} className="focus:text-muted-foreground">{m.label}</SelectItem>)}
-          </SelectContent>
-        </Select>
-      </div>
-      <div className="flex flex-col gap-1">
-        <Label htmlFor="bench-runs" className={labelClasses}>Runs per arm</Label>
-        <Select value={String(runs)} onValueChange={(n) => setRuns(Number(n))}>
-          <SelectTrigger id="bench-runs" className={fieldClasses}><SelectValue /></SelectTrigger>
-          <SelectContent className="text-muted-foreground">
-            {RUN_COUNTS.map((n) => <SelectItem key={n} value={String(n)} className="focus:text-muted-foreground">{n}</SelectItem>)}
-          </SelectContent>
-        </Select>
-      </div>
+    <div className={settingsGridClasses}>
+      <SettingRow id="bench-runner-provider-label" label="Runner provider" note="who answers the scenarios">
+        <SettingSelect id="bench-runner-provider" labelledBy="bench-runner-provider-label" value={runnerProvider} width="w-[220px]"
+          onValueChange={(id) => { setRunnerProvider(id); setRunnerModel(''); }}
+          options={providerList.map((p) => ({ id: p.id, label: `${p.name} · ${p.id === DEFAULT_RUNNER_PROVIDER ? OWN_HOOKS_NOTE : WRAPPED_NOTE}` }))} />
+      </SettingRow>
+      <SettingRow id="bench-runner-label" label="Runner model" note="the runner’s model">
+        <SettingSelect id="bench-runner" labelledBy="bench-runner-label" value={runnerModelId} width="w-[220px]"
+          onValueChange={setRunnerModel} options={runnerModels} />
+      </SettingRow>
+      <SettingRow id="bench-judge-provider-label" label="Judge provider" note="who scores the answers">
+        <SettingSelect id="bench-judge-provider" labelledBy="bench-judge-provider-label" value={judgeProviderId} width="w-[220px]"
+          onValueChange={(id) => { setJudgeProvider(id); setJudgeModel(''); }}
+          options={providerList.map((p) => ({ id: p.id, label: p.name }))} />
+      </SettingRow>
+      <SettingRow id="bench-judge-model-label" label="Judge model" note="the judge’s model">
+        <SettingSelect id="bench-judge-model" labelledBy="bench-judge-model-label" value={judgeModelId} width="w-[220px]"
+          onValueChange={setJudgeModel} options={models} />
+      </SettingRow>
+      <SettingRow id="bench-runs-label" label="Runs per arm" note="answers per arm, the verdict a majority vote">
+        <NumberStepper value={runs} onChange={setRuns} min={MIN_RUNS} max={MAX_RUNS} labelledBy="bench-runs-label" />
+      </SettingRow>
       {children}
     </div>
   );
@@ -186,7 +166,7 @@ export function BenchmarkChoiceFields({ onChange, children }: { onChange: (choic
 export function runnerNote(choices: BenchmarkChoices | null): string {
   return !choices || choices.runner_provider === DEFAULT_RUNNER_PROVIDER
     ? 'the rule on against the rule off, in fresh headless sessions with your hooks running; the rule is off for your live sessions while an off answer is awaited'
-    : 'the rule on against the rule off; this runner has no hooks, so the rule’s text goes ahead of the scenario on the on arm and your live sessions are untouched';
+    : 'the rule on against the rule off; this runner has no hooks of its own, so Synapptic runs its prompt hook around it and the rule reaches it as it would in Claude Code; the rule is off for your live sessions while an off answer is awaited';
 }
 
 export function BenchmarkPanel({ run, onRun, onStop }: {

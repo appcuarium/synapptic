@@ -14,6 +14,7 @@ import threading
 import time
 from pathlib import Path
 from typing import Awaitable, Callable
+from urllib.parse import urlparse
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
@@ -36,6 +37,7 @@ GUARDS_TOPIC = "guards"
 GUARD_CHANGES_SHOWN = 20
 API_KEY_HINT_LENGTH = 4
 KEYWORD_MAX_LENGTH = 16   # the word that turns a prompt into a rule: one word, this long at most
+CUSTOM_PROVIDER = "custom"   # the provider whose saved endpoints become cards of their own
 SESSION_PAGE_SIZE = 100
 SESSION_PAGE_MAX = 500
 TOOL_SUMMARY_LENGTH = 160
@@ -71,6 +73,9 @@ class ConfigPatch(BaseModel):
     provider: str | None = None
     model: str | None = Field(default=None, min_length=1, max_length=128)
     api_key: str | None = Field(default=None, max_length=512)   # write-only; "" clears it
+    api_url: str | None = Field(default=None, max_length=512)   # the endpoint's URL (custom, a local server, an API); "" clears it
+    endpoint_name: str | None = Field(default=None, max_length=64)   # a custom endpoint's name: it becomes a card of its own
+    remove_endpoint: str | None = Field(default=None, max_length=512)   # the URL of a saved custom endpoint to drop (its card goes)
     batches: BatchesPatch | None = None
     include_headless_sessions: bool | None = None
     write_rules: bool | None = None
@@ -115,6 +120,34 @@ def apply_patch(config: dict, patch: ConfigPatch) -> dict:
             updated["api_key"] = patch.api_key
         else:
             updated.pop("api_key", None)
+    if patch.api_url is not None:
+        url = patch.api_url.strip()
+        if url and not url.startswith(("http://", "https://")):
+            raise MethodError(ErrorCode.INVALID_PARAMS, "the API URL starts with http:// or https://")
+        if url:
+            updated["api_url"] = url
+        else:
+            updated.pop("api_url", None)
+    if updated.get("provider") == CUSTOM_PROVIDER and updated.get("api_url"):
+        # a saved custom endpoint is a card of its own (operator 2026-11-06): one entry per URL, named by
+        # the user (or after its host), its model the one saved with it; a save with the same URL updates it
+        entries = [dict(e) for e in (updated.get("endpoints") or []) if isinstance(e, dict) and e.get("url")]
+        known = next((e for e in entries if e["url"] == updated["api_url"]), None)
+        name = (patch.endpoint_name or "").strip() or (known or {}).get("name") or urlparse(updated["api_url"]).netloc or updated["api_url"]
+        entry = {"name": name, "url": updated["api_url"], "model": updated.get("model") or ""}
+        if known:
+            known.update(entry)
+        else:
+            entries.append(entry)
+        updated["endpoints"] = entries
+    if patch.remove_endpoint:
+        # a saved endpoint is dropped with its card (operator 2026-11-06: "all info about the custom endpoint
+        # goes"); when it was the one in use, its URL, model and key go with it
+        updated["endpoints"] = [e for e in (updated.get("endpoints") or []) if not (isinstance(e, dict) and e.get("url") == patch.remove_endpoint)]
+        if updated.get("api_url") == patch.remove_endpoint:
+            updated.pop("api_url", None)
+            updated.pop("api_key", None)
+            updated["model"] = ""
     if patch.batches is not None and patch.batches.extract is not None:
         updated["batches"] = {**(updated.get("batches") or {}), "extract": patch.batches.extract}
     if patch.include_headless_sessions is not None:
@@ -176,6 +209,8 @@ async def providers_list(params: dict, hub: Hub) -> list[dict]:
             "id": provider_id,
             "name": spec["name"],
             "requires_key": spec.get("requires_key", False),
+            "requires_url": spec.get("requires_url", False),      # the custom endpoint: no URL, no provider
+            "default_url": spec.get("default_url", ""),           # a local server or an API with a known URL
             "default_model": spec.get("default_model", ""),
             "models": [{"id": model_id, "label": label} for model_id, label in spec.get("models", [])],
             "batches": providers.provider_supports(provider_id, "batches"),
@@ -791,6 +826,11 @@ async def guards_benchmark_flush(params: dict, hub: Hub) -> dict:
     return {"flushed": await asyncio.to_thread(benchmark.flush_scope_benchmarks)}
 
 
+async def guards_benchmark_flush_scenarios(params: dict, hub: Hub) -> dict:
+    """Forget every kept scenario set (the CLI's --flush-tests): the next run generates them again."""
+    return {"flushed": await asyncio.to_thread(benchmark.flush_scenarios)}
+
+
 async def guards_benchmark_state(params: dict, hub: Hub) -> dict:
     """A rule's latest run as the page needs it after a reload: whether it is still running and every event
     so far (the topic carries the rest)."""
@@ -834,6 +874,7 @@ METHODS: dict[str, Method] = {
     "guards.benchmark.scope": guards_benchmark_scope,
     "guards.benchmark.runs": guards_benchmark_runs,
     "guards.benchmark.flush": guards_benchmark_flush,
+    "guards.benchmark.flush_scenarios": guards_benchmark_flush_scenarios,
     "profile.get": profile_get,
     "server.restart": server_restart,
 }

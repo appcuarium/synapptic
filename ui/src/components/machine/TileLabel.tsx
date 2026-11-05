@@ -15,7 +15,7 @@ export const tileLabelStyle = { backgroundColor: LABEL_BACKGROUND };
 // same darkness with that hue's text for a rule whose benchmark says so, or the outline alone (the label
 // colour as the border and as the text, no fill; operator 2026-11-05) for a rule with no benchmark.
 export type TileLabelTone = 'amber' | 'rose' | 'outline';
-const TONE_CLASSES: Record<TileLabelTone, string> = { amber: 'bg-amber-800 text-amber-100', rose: 'bg-rose-800 text-rose-100', outline: 'border bg-transparent' };
+export const TONE_CLASSES: Record<TileLabelTone, string> = { amber: 'bg-amber-800 text-amber-100', rose: 'bg-rose-800 text-rose-100', outline: 'border bg-transparent' };
 const OUTLINE_STYLE: CSSProperties = { borderColor: LABEL_BACKGROUND, color: LABEL_BACKGROUND };
 
 // The chip's height and text size are the benchmark runs toggles' (h-8, 13px; operator 2026-11-05); tooltips

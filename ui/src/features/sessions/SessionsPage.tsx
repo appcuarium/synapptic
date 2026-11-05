@@ -5,6 +5,7 @@ import { useInfiniteQuery, useQuery } from '@tanstack/react-query';
 import { useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { PageHeader } from '@/components/layout/PageHeader';
+import { type StatusNotes, useStatusNotes } from '@/components/layout/StatusBar';
 import { Described } from '@/components/machine/Described';
 import { fieldClasses } from '@/components/machine/field';
 import { TileStrip } from '@/components/machine/TileStrip';
@@ -12,7 +13,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { cn } from '@/lib/cn';
 import { logPosition } from '@/lib/tileColor';
-import { useConnectionState, useWs, useWsQuery } from '@/lib/ws/react';
+import { useWs, useWsQuery } from '@/lib/ws/react';
 import { TurnView } from './Conversation';
 import { formatCount, formatDateTime } from './format';
 import { LIVE_REFRESH_MS, type SessionRow, type SessionStats, type TurnsPage } from './types';
@@ -31,12 +32,6 @@ function tileName(title: string | null): string {
   const name = title || '(no title)';
   return name.length > TILE_NAME_CHARS ? `${name.slice(0, TILE_NAME_CHARS - 1)}…` : name;
 }
-const CONNECTION = {
-  open: ['bg-teal-500', 'Connected'],
-  connecting: ['bg-amber-500', 'Connecting'],
-  closed: ['bg-rose-500', 'Disconnected'],
-} as const;
-
 function matches(session: SessionRow, query: string): boolean {
   const haystack = `${session.title ?? ''} ${session.project} ${session.model ?? ''} ${session.session_id}`;
   return haystack.toLowerCase().includes(query);
@@ -72,26 +67,19 @@ function StatsRow({ session, stats }: { session: SessionRow; stats: SessionStats
   );
 }
 
-function ConnectionBar({ session }: { session: SessionRow | undefined }) {
-  const [dot, label] = CONNECTION[useConnectionState()];
-  return (
-    <div className="shrink-0 flex items-center bg-page h-6 border-t border-line">
-      {/* one line at every width: on phones the source and the model drop out, as the size already does */}
-      <div className="py-1 px-2 text-left h-6 text-[10px] flex items-center justify-between flex-1 whitespace-nowrap">
-        <div className="flex items-center">
-          <span className="flex items-center"><span className={cn('mr-1 w-1.5 h-1.5 rounded-full inline-block', dot)} /><span className="text-fg-muted">{label}</span></span>
-          <span className="hidden sm:flex items-center mx-2 text-fg-subtle">session index</span>
-        </div>
-        {session && (
-          <div className="flex items-center gap-3 text-fg-subtle">
-            <span>SESSION <span className="text-fg-2">{session.session_id.slice(0, 8)}</span></span>
-            <span className="hidden sm:inline">MODEL <span className="text-fg-2">{session.model}</span></span>
-            <span className="hidden sm:inline">SIZE <span className="text-fg-2">{(session.file_size / 1e6).toFixed(1)} MB</span></span>
-          </div>
-        )}
-      </div>
-    </div>
-  );
+// The page's notes on the global status bar (operator 2026-11-06): the source and the picked session's
+// id, model and size; the model and the size drop out on phones, as the size already did.
+function statusNotes(session: SessionRow | undefined): StatusNotes {
+  return {
+    source: 'session index',
+    right: session && (
+      <>
+        <span>SESSION <span className="text-fg-2">{session.session_id.slice(0, 8)}</span></span>
+        <span className="hidden sm:inline">MODEL <span className="text-fg-2">{session.model}</span></span>
+        <span className="hidden sm:inline">SIZE <span className="text-fg-2">{(session.file_size / 1e6).toFixed(1)} MB</span></span>
+      </>
+    ),
+  };
 }
 
 export function SessionsPage() {
@@ -110,6 +98,7 @@ export function SessionsPage() {
       || (newestFirst ? -1 : 1) * (a.first_timestamp ?? '').localeCompare(b.first_timestamp ?? ''));
   }, [sessions.data, query, newestFirst]);
   const selected = visible.find((s) => s.session_id === params.get('session')) ?? visible[0];
+  useStatusNotes(useMemo(() => statusNotes(selected), [selected]));
 
   const turns = useInfiniteQuery({
     queryKey: ['sessions.turns', selected?.session_id],
@@ -157,7 +146,8 @@ export function SessionsPage() {
   }, [live.dataUpdatedAt]);
 
   return (
-    <section className="h-[calc(100dvh-3rem)] flex flex-col">
+    // the viewport less the top bar (3rem) and the status bar under every page (1.5rem)
+    <section className="h-[calc(100dvh-4.5rem)] flex flex-col">
       <PageHeader title="Sessions">
         <span className="text-sm text-fg-subtle truncate">{project ?? 'All projects'}</span>
         <label htmlFor="session-search" className="sr-only">Search sessions</label>
@@ -194,7 +184,6 @@ export function SessionsPage() {
       </div>
 
       {stats && selected && <StatsRow session={selected} stats={stats} />}
-      <ConnectionBar session={selected} />
     </section>
   );
 }

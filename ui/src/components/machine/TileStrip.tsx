@@ -132,9 +132,10 @@ export function TileStrip({ tiles, selectedId, onSelect, statusLeft, statusRight
                   style={tile.live ? undefined : { backgroundColor: tileBackground(0, tile.strength) }}>
                   {tile.live && <span className="absolute top-1.5 left-1.5 size-1.5 rounded-full bg-lime-300" aria-hidden="true" />}
                   {/* text follows the tile's hue (Machine: <hue>-100 value, <hue>-100/80 name and id) */}
-                  <span className={cn('relative text-[11px] truncate w-full text-center px-1 leading-tight', tile.live ? 'text-lime-100/80' : 'text-tile-fg/80')}>{tile.name}</span>
-                  <span className={cn('relative text-lg font-bold leading-snug', tile.live ? 'text-lime-100' : 'text-tile-fg')}>{tile.value}</span>
-                  <span className={cn('relative text-[10px] leading-tight', tile.live ? 'text-lime-100/80' : 'text-tile-fg/80')}>{tile.sub}</span>
+                  {/* the three lines keep 8px from the tile's edges at every width (operator 2026-11-06) */}
+                  <span className={cn('relative text-[11px] truncate w-full text-center px-2 leading-tight', tile.live ? 'text-lime-100/80' : 'text-tile-fg/80')}>{tile.name}</span>
+                  <span className={cn('relative text-lg font-bold leading-snug truncate max-w-full px-2', tile.live ? 'text-lime-100' : 'text-tile-fg')}>{tile.value}</span>
+                  <span className={cn('relative text-[10px] leading-tight truncate max-w-full px-2', tile.live ? 'text-lime-100/80' : 'text-tile-fg/80')}>{tile.sub}</span>
                 </button>
                 </Described>
               </div>

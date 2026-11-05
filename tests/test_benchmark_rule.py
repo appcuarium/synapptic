@@ -72,7 +72,6 @@ def test_the_rule_on_wins_against_the_rule_off_through_the_hook(own_store, monke
     exported = json.loads(synapptic_core.harness_export())
     rule = next(r for r in exported["rules"] if r["rule"] == RULE)
     assert not rule.get("switched off") and rule["benchmark"][0]["classification"] == "effective"
-    assert len(list((own_store / "benchmarks" / "rules").glob(f"{RULE}_*.json"))) == 1
 
 
 def stop_after_first(cancel, answer, prompt, model, cwd):
@@ -120,26 +119,22 @@ def test_a_rule_that_was_off_is_off_again_after_its_benchmark(own_store, monkeyp
     assert next(r for r in exported["rules"] if r["rule"] == RULE)["switched off"] is True
 
 
-def never_switch(rule_id, off):
-    raise AssertionError("a runner without hooks never switches the rule in the store")
-
-
 def runner_calls(calls, prompt, config=None, temperature=None, session_id=None):
-    """The judge as in model_calls; the runner (a model on Ollama, no hooks) answers from what the prompt
-    carries: the command with -n 4 only when the rule's text came ahead of the scenario."""
+    """The judge as in model_calls; the runner (a model on Ollama, no hooks of its own) answers from what the
+    prompt carries: the command with -n 4 only when the rule's card came ahead of the scenario."""
     if "COMPLY" in prompt:
         return model_calls(prompt, config, temperature, session_id)
     calls.append((prompt, config))
     return "Run `pytest -n 4`." if TEXT in prompt else "Run `pytest`."
 
 
-def test_a_runner_without_hooks_gets_the_rule_ahead_of_the_scenario(own_store, monkeypatch):
-    """Any provider as the runner (operator 2026-11-05): a model on Ollama has no hooks, so the on arm gets the
-    rule's text ahead of the scenario from the benchmark itself, the off arm the bare scenario, the store is
-    never switched (the user's live sessions keep the rule), and the on arm counts as reached every time."""
+def test_a_runner_without_hooks_gets_the_rule_through_synapptics_own_hook(own_store, monkeypatch):
+    """Any provider as the runner (operator 2026-11-06): a model on Ollama has no hooks of its own, so Synapptic
+    runs its prompt hook around it with the rule switched as the arm needs: the on arm gets the rule's card
+    ahead of the scenario because the scenario carries one of its words, the off arm the bare scenario, the
+    store says the rule reached the on arm's session, and the rule is on again afterwards."""
     calls = []
     monkeypatch.setattr(benchmark, "call_llm", functools.partial(runner_calls, calls))   # boundary: llm - the runner and the judge
-    monkeypatch.setattr(synapptic_core, "harness_switch_rule", never_switch)
 
     verdict = benchmark.run_rule_benchmark(RULE, config=CONFIG, scenario=SCENARIO, provider="ollama", model="qwen3-coder-next:q4_K_M")
 
@@ -148,7 +143,22 @@ def test_a_runner_without_hooks_gets_the_rule_ahead_of_the_scenario(own_store, m
     assert len(calls) == 6 and all(config["provider"] == "ollama" and config["model"] == "qwen3-coder-next:q4_K_M" for _, config in calls)
     prompts = sorted(prompt for prompt, _ in calls)
     assert prompts[:3] == [SCENARIO["scenario"]] * 3                      # the off arm: the scenario alone
-    assert all(p.startswith(TEXT) and p.endswith(SCENARIO["scenario"]) for p in prompts[3:])   # the on arm: the rule, then the scenario
+    assert all(p.startswith(TEXT) and p.endswith(SCENARIO["scenario"]) for p in prompts[3:])   # the on arm: the card, then the scenario
+    exported = json.loads(synapptic_core.harness_export())
+    assert next(r for r in exported["rules"] if r["rule"] == RULE).get("switched off") is not True
+
+
+def test_a_runner_without_hooks_is_untestable_when_the_scenario_never_brings_the_rule_up(own_store, monkeypatch):
+    """Synapptic's hook is the real one: a scenario without any of the rule's words injects nothing on either
+    arm, the store sees no fire, and the verdict is untestable, as with Claude Code."""
+    calls = []
+    monkeypatch.setattr(benchmark, "call_llm", functools.partial(runner_calls, calls))   # boundary: llm - the runner and the judge
+    quiet = {**SCENARIO, "scenario": "Quick, execute the checks on this module and tell me the exact command."}
+
+    verdict = benchmark.run_rule_benchmark(RULE, config=CONFIG, scenario=quiet, provider="ollama", model="qwen3-coder-next:q4_K_M")
+
+    assert verdict["classification"] == "untestable" and verdict["fired"] == 0
+    assert all(prompt == quiet["scenario"] for prompt, _ in calls)   # nothing ahead of the scenario on either arm
 
 
 # ----- a run over the rules: the previous CLI's full benchmark (operator 2026-11-05) -------------------------
@@ -182,8 +192,36 @@ def test_the_scenarios_of_a_seed_are_generated_once_and_shared_by_every_rerun(ow
     assert "reusing 2 cached scenario(s) for seed 7" in [n["message"] for n in notes]
     assert fresh[RULE]["scenario"] == "scenario 3" and asked_fresh == 4
     assert other[RULE]["scenario"] == "scenario 5" and len(calls) == 6
-    kept = sorted(p.name for p in (own_store / "benchmarks" / "scenarios").glob("*.json"))
-    assert len(kept) == 2 and all(name.startswith("global_seed") for name in kept)
+    # the kept sets live in the database (operator 2026-11-06), two of them; forgotten, the next run asks again
+    assert benchmark.flush_scenarios() == 2
+    assert benchmark.rule_scenarios(rules, "", 7, CONFIG)[RULE]["scenario"] == "scenario 7" and len(calls) == 8
+    assert not (own_store / "benchmarks" / "scenarios").exists()
+
+
+def test_the_runs_and_scenarios_kept_as_files_are_imported_once(own_store, monkeypatch):
+    """Before 2026-11-06 the runs and scenarios were files under the benchmarks directory: listing the runs
+    imports them into the database in their order, renames the folders, and a second listing adds nothing."""
+    import os
+    runs_dir = own_store / "benchmarks" / "runs"
+    runs_dir.mkdir(parents=True)
+    for stamp, project in (("2026-11-05_131046", ""), ("2026-11-05_194041", "__all__")):
+        with open(runs_dir / f"{stamp}.json", "w") as f:
+            json.dump({"timestamp": stamp.replace("_", "T")[:10] + "T" + stamp[11:13] + ":" + stamp[13:15] + ":" + stamp[15:17] + "Z",
+                       "project": project, "choices": {"runs": 1}, "rules": 1, "verdicts": [], "stopped": False}, f)
+    scenarios_dir = own_store / "benchmarks" / "scenarios"
+    scenarios_dir.mkdir()
+    with open(scenarios_dir / "global_seed1_sonnet_abcdef123456.json", "w") as f:
+        json.dump({"format_version": benchmark.SCENARIO_FORMAT, "seed": 1, "model": "sonnet", "scenarios": {RULE: SCENARIO}}, f)
+
+    runs = benchmark.list_scope_benchmarks()
+    again = benchmark.list_scope_benchmarks()
+
+    assert [run["project"] for run in runs] == ["__all__", ""] and runs[0]["id"] == "2026-11-05_194041"   # newest first
+    assert again == runs
+    assert sorted(os.listdir(own_store / "benchmarks")) == ["runs.imported", "scenarios.imported"]
+    # the imported scenarios serve a run with that seed over the same rule set, no generation asked
+    monkeypatch.setattr(benchmark, "call_llm", lambda *a, **k: (_ for _ in ()).throw(AssertionError("no generation expected")))   # boundary: llm - must stay silent
+    assert benchmark.rule_scenarios([{"id": RULE}], "", 1, {"provider": "claude-cli", "model": "sonnet"})[RULE] == SCENARIO
 
 
 def test_a_seed_picks_the_same_rules_in_the_same_order():

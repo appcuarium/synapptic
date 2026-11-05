@@ -89,6 +89,56 @@ def test_the_tuning_dial_is_read_and_written_through_config(client, config_path)
     assert saved["harness"] == {"tuning": "eager"} and saved["api_key"] == SECRET
 
 
+def test_the_endpoint_url_is_a_setting_where_the_provider_takes_one(client, config_path):
+    """The CLI's "API URL" question on the page (operator 2026-11-06): providers.list says which providers take a
+    URL and their known one; config.update keeps it in the file, clears it on "", refuses one without http(s)."""
+    with client.websocket_connect("/api/ws") as ws:
+        ws.receive_json()
+        listed = {p["id"]: p for p in request(ws, "u0", "providers.list")["result"]}
+        assert listed["custom"]["requires_url"] is True and listed["custom"]["default_url"] == ""
+        assert listed["ollama"]["requires_url"] is False and listed["ollama"]["default_url"] == "http://localhost:11434/v1"
+        assert listed["anthropic"]["requires_url"] is False and listed["anthropic"]["default_url"] == ""
+        saved = request(ws, "u1", "config.update", {"provider": "custom", "model": "glm-5", "api_url": "http://10.0.0.7:8080/v1"})["result"]
+        assert saved["provider"] == "custom" and saved["model"] == "glm-5" and saved["api_url"] == "http://10.0.0.7:8080/v1"
+        assert request(ws, "u2", "config.update", {"api_url": "ftp://nope"})["code"] == "invalid_params"
+        assert "api_url" not in request(ws, "u3", "config.update", {"api_url": ""})["result"]
+    assert "api_url" not in yaml.safe_load(config_path.read_text())
+
+
+def test_a_saved_custom_endpoint_becomes_a_card_of_its_own(client, config_path):
+    """Saving the custom provider with a URL keeps the endpoint as an entry (operator 2026-11-06: a new card in
+    the strip): named by the user or after its host, with its model; the same URL saved again updates the
+    entry, another URL adds one; the entries survive a switch to another provider."""
+    with client.websocket_connect("/api/ws") as ws:
+        ws.receive_json()
+        first = request(ws, "e1", "config.update", {"provider": "custom", "model": "glm-5", "api_url": "http://10.0.0.7:8080/v1", "endpoint_name": "the studio box"})["result"]
+        assert first["endpoints"] == [{"name": "the studio box", "url": "http://10.0.0.7:8080/v1", "model": "glm-5"}]
+        again = request(ws, "e2", "config.update", {"model": "glm-5-air"})["result"]
+        assert again["endpoints"] == [{"name": "the studio box", "url": "http://10.0.0.7:8080/v1", "model": "glm-5-air"}]
+        more = request(ws, "e3", "config.update", {"api_url": "https://llm.example.net/v1", "model": "qwen3"})["result"]
+        assert [e["name"] for e in more["endpoints"]] == ["the studio box", "llm.example.net"]
+        back = request(ws, "e4", "config.update", {"provider": "anthropic", "model": "claude-sonnet-5-5"})["result"]
+        assert len(back["endpoints"]) == 2
+    assert len(yaml.safe_load(config_path.read_text())["endpoints"]) == 2
+
+
+def test_a_saved_custom_endpoint_can_be_removed(client, config_path):
+    """Removing an endpoint by its URL drops its entry (operator 2026-11-06: its card goes); the other entries
+    stay; when it was the URL in use, its URL, model and key go with it (operator: "all info about the
+    custom endpoint goes"); an unknown URL changes nothing."""
+    with client.websocket_connect("/api/ws") as ws:
+        ws.receive_json()
+        request(ws, "r1", "config.update", {"provider": "custom", "model": "glm-5", "api_url": "http://10.0.0.7:8080/v1", "endpoint_name": "the studio box"})
+        request(ws, "r2", "config.update", {"api_url": "https://llm.example.net/v1", "model": "qwen3", "api_key": "sk-test-key"})
+        gone = request(ws, "r3", "config.update", {"remove_endpoint": "https://llm.example.net/v1"})["result"]
+        assert [e["name"] for e in gone["endpoints"]] == ["the studio box"]
+        assert gone["model"] == "" and not gone.get("api_url") and not gone["api_key_set"]
+        same = request(ws, "r4", "config.update", {"remove_endpoint": "https://nowhere.example.net/v1"})["result"]
+        assert [e["name"] for e in same["endpoints"]] == ["the studio box"]
+    saved = yaml.safe_load(config_path.read_text())
+    assert [e["name"] for e in saved["endpoints"]] == ["the studio box"] and "api_url" not in saved and "api_key" not in saved
+
+
 def test_the_rule_keyword_is_read_and_written_with_the_rules_not_the_file(client, config_path, tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))   # boundary: the rules' store lives under a scratch HOME, never the user's
     with client.websocket_connect("/api/ws") as ws:
@@ -299,6 +349,7 @@ def test_the_benchmark_page_runs_every_rule_in_scope_and_keeps_the_run(client, m
             pass
         reruns = request(ws, "s6", "guards.benchmark.runs")["result"]
         state = request(ws, "s7", "guards.benchmark.state", {"id": "__scope__"})["result"]
+        forgotten = request(ws, "s8", "guards.benchmark.flush_scenarios")["result"]   # the one kept set for seed 3
         flushed = request(ws, "s3", "guards.benchmark.flush")["result"]
         assert request(ws, "s4", "guards.benchmark.runs")["result"] == []
     # the Global card's rules only, in the seed's order, each on its kept scenario, with the choices and its own switch
@@ -318,7 +369,7 @@ def test_the_benchmark_page_runs_every_rule_in_scope_and_keeps_the_run(client, m
     assert [v["classification"] for v in run["verdicts"]] == ["effective" if rule_id == "pytest-parallel" else "redundant" for rule_id in order]
     assert run["choices"]["runner_model"] == "gemma3:27b" and run["choices"]["seed"] == 3 and run["choices"]["temperature"] == 0.4
     assert len(runs) == 1 and runs[0]["verdicts"] == run["verdicts"] and runs[0]["id"]
-    assert len(reruns) == 2 and flushed == {"flushed": 2}
+    assert len(reruns) == 2 and flushed == {"flushed": 2} and forgotten == {"flushed": 1}
     # the rerun's state as a reloaded page reads it: the run's own notes once each (they were doubled, 2026-11-05)
     kept = [e["message"] for e in state["events"] if e["rule"] == "__scope__" and e.get("kind") == "note"]
     assert kept[:2] == ["reusing 2 cached scenario(s) for seed 3", "reading the judge on the two control cases"]

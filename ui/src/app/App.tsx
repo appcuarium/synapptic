@@ -3,6 +3,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { createBrowserRouter, RouterProvider, type RouteObject } from 'react-router-dom';
 import { AppShell } from '@/components/layout/AppShell';
 import { NotBuiltYet } from '@/components/layout/PageHeader';
+import { Notices } from '@/components/machine/Notice';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { BenchmarkPage } from '@/features/guards/BenchmarkPage';
 import { GuardsPage } from '@/features/guards/GuardsPage';
@@ -50,6 +51,8 @@ export function AppProviders({ children }: { children: ReactNode }) {
       <QueryClientProvider client={queryClient}>
         {/* descriptions are tooltips on every page: one provider, shown at once like the sidebar's */}
         <TooltipProvider delayDuration={0}>{children}</TooltipProvider>
+        {/* notices at the bottom right on every page (operator 2026-11-06) */}
+        <Notices />
       </QueryClientProvider>
     </WsProvider>
   );

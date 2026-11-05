@@ -6,10 +6,13 @@ import { Outlet } from 'react-router-dom';
 import { SidebarInset, SidebarProvider } from '@/components/ui/sidebar';
 import { useMediaQuery } from '@/hooks/use-media-query';
 import { AppSidebar } from './Sidebar';
+import { StatusBar, StatusNotesProvider } from './StatusBar';
 import { TopBar } from './TopBar';
 
 const SIDEBAR_SIZES = { '--sidebar-width': '14rem', '--sidebar-width-icon': '3.5rem' } as CSSProperties;
 
+// The status bar sits under every page (operator 2026-11-06): at the foot of the page's column, and on
+// the viewport's bottom edge while a long page scrolls.
 export function AppShell() {
   const wide = useMediaQuery('(min-width: 1024px)');
   return (
@@ -18,7 +21,10 @@ export function AppShell() {
       <div className="flex flex-1 min-h-0">
         <AppSidebar />
         <SidebarInset className="min-w-0 bg-page">
-          <Outlet />
+          <StatusNotesProvider>
+            <Outlet />
+            <StatusBar />
+          </StatusNotesProvider>
         </SidebarInset>
       </div>
     </SidebarProvider>

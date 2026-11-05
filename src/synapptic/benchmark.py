@@ -1304,28 +1304,30 @@ def rules_hash(rule_ids) -> str:
     return hashlib.sha256("\n".join(sorted(rule_ids)).encode()).hexdigest()[:12]
 
 
-def scenarios_path(scope: str, seed: int, model: str, rule_ids) -> "Path":
-    """Where a run's scenarios live: by scope, seed, generation model and rule set, as the CLI keyed its cache."""
-    return BENCHMARKS_DIR / SCOPE_SCENARIOS / f"{file_safe(scope)}_seed{seed}_{file_safe(model)}_{rules_hash(rule_ids)}.json"
+def scenarios_key(scope: str, seed: int, model: str, rule_ids) -> str:
+    """What a run's scenarios are kept under: scope, seed, generation model and rule set, as the CLI keyed
+    its cache. They live in the database beside the rules (operator 2026-11-06), not in files."""
+    return f"{scope}|{seed}|{model}|{rules_hash(rule_ids)}"
 
 
-def load_scenarios(path) -> dict[str, dict]:
-    """The cached scenarios by rule id, or none when the file is missing or of an older shape."""
-    try:
-        with open(path) as f:
-            data = json.load(f)
-    except (OSError, json.JSONDecodeError):
-        return {}
-    if data.get("format_version") != SCENARIO_FORMAT:
+def load_scenarios(key: str) -> dict[str, dict]:
+    """The kept scenarios by rule id, or none when nothing is kept under the key or it is of an older shape."""
+    data = require_core().harness_scenarios_get(key)
+    if not isinstance(data, dict) or data.get("format_version") != SCENARIO_FORMAT:
         return {}
     return dict(data.get("scenarios") or {})
 
 
-def save_scenarios(path, cases: dict[str, dict], seed: int, model: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "w") as f:
-        json.dump({"format_version": SCENARIO_FORMAT, "seed": seed, "model": model,
-                   "generated_at": datetime.now(timezone.utc).isoformat(), "scenarios": cases}, f, indent=2)
+def save_scenarios(key: str, cases: dict[str, dict], seed: int, model: str) -> None:
+    require_core().harness_scenarios_put(key, json.dumps({
+        "format_version": SCENARIO_FORMAT, "seed": seed, "model": model,
+        "generated_at": datetime.now(timezone.utc).isoformat(), "scenarios": cases,
+    }))
+
+
+def flush_scenarios() -> int:
+    """Forget every kept scenario set (the CLI's --flush-tests); how many went."""
+    return require_core().harness_scenarios_flush()
 
 
 def rule_scenarios(rules: list[dict], scope: str, seed: int, config: dict, refresh: bool = False,
@@ -1337,8 +1339,8 @@ def rule_scenarios(rules: list[dict], scope: str, seed: int, config: dict, refre
     say = progress or (lambda event: None)
     model = str(config.get("model") or "")
     ids = [rule["id"] for rule in rules]
-    path = scenarios_path(scope, seed, model, ids)
-    cases = {} if refresh else load_scenarios(path)
+    key = scenarios_key(scope, seed, model, ids)
+    cases = {} if refresh else load_scenarios(key)
     missing = [rule for rule in rules if rule["id"] not in cases]
     if cases and not missing:
         say({"kind": "note", "message": f"reusing {len(cases)} cached scenario(s) for seed {seed}"})
@@ -1350,7 +1352,7 @@ def rule_scenarios(rules: list[dict], scope: str, seed: int, config: dict, refre
         case = generate_rule_scenario(rule["id"], config)
         if case:
             cases[rule["id"]] = case
-    save_scenarios(path, cases, seed, model)
+    save_scenarios(key, cases, seed, model)
     say({"kind": "note", "message": f"{len(cases)} scenario(s) kept for seed {seed}"})
     return {rule_id: cases[rule_id] for rule_id in ids if rule_id in cases}
 
@@ -1421,7 +1423,7 @@ def run_rule_benchmark(rule_id: str, config: dict | None = None, judge_config: d
     order_rng.shuffle(run_orders)
     state = {
         "rule": rule_id, "case": case, "model": model, "cwd": cwd, "runs": runs, "answer": answer, "say": say,
-        "hooked": hooked, "context": None if hooked else core.harness_rule_context(rule_id), "was_off": was_off, "provider": provider,
+        "hooked": hooked, "was_off": was_off, "provider": provider,
         "judge_config": judge_config, "judge_failures": 0, "response_failures": 0, "cancel": cancel,
         "with": {"passes": 0, "valid": 0, "reasons": [], "fired": 0, "replies": []},
         "without": {"passes": 0, "valid": 0, "reasons": [], "fired": 0, "replies": []},
@@ -1463,15 +1465,27 @@ def run_rule_benchmark(rule_id: str, config: dict | None = None, judge_config: d
     }
     say({"kind": "note", "message": "recording the verdict"})
     core.harness_record_verdict(rule_id, json.dumps(verdict))
-    save_rule_benchmark(verdict)
     return verdict
 
 
+def hook_context(core, session: str, prompt: str, cwd: str | None) -> str:
+    """What Synapptic's prompt hook puts in front of a model for this prompt, in the session given: the rules
+    whose words match, as the hook would inject them inside Claude Code; "" when none."""
+    payload = {"hook_event_name": "UserPromptSubmit", "session_id": session, "prompt": prompt, "cwd": cwd or ""}
+    done = core.harness_pre(json.dumps(payload))
+    if not done.get("stdout"):
+        return ""
+    try:
+        return str(json.loads(done["stdout"]).get("hookSpecificOutput", {}).get("additionalContext") or "")
+    except (ValueError, AttributeError):
+        return ""
+
+
 def _run_arm(state: dict, name: str, on: bool, run: int) -> None:
-    """One arm of one run. A hooked runner (Claude Code): the rule switched as the arm needs (and back to
-    what it was whatever happens), the headless session's reply, whether the store saw the rule in that session. A runner
-    without hooks: the rule's text ahead of the scenario on the on arm, the bare scenario on the off arm. Then
-    the judge's score."""
+    """One arm of one run: the rule switched as the arm needs (and back to what it was whatever happens); a
+    hooked runner (Claude Code) answers in a headless session with the user's hooks, any other runner answers
+    what Synapptic's own prompt hook put ahead of the scenario; the store says whether the rule reached the
+    session either way. Then the judge's score."""
     core = require_core()
     rule_id, case, say = state["rule"], state["case"], state["say"]
     if state["cancel"] is not None and state["cancel"].is_set():
@@ -1479,23 +1493,28 @@ def _run_arm(state: dict, name: str, on: bool, run: int) -> None:
     say({"kind": "note", "run": run + 1, "runs": state["runs"], "arm": name,
          "message": f"run {run + 1} of {state['runs']}: the rule {'on' if on else 'off'}"
          + ("" if on or not state["hooked"] else " (off for your live sessions until this reply comes back)")})
-    if state["hooked"]:
-        # the store's switch, through the core (the plumbing's wrapper lives in harness.py, which imports this module)
-        core.harness_switch_rule(rule_id, not on)
-        try:
+    # the store's switch, through the core (the plumbing's wrapper lives in harness.py, which imports this module)
+    core.harness_switch_rule(rule_id, not on)
+    try:
+        if state["hooked"]:
             reply, session = state["answer"](case["scenario"], state["model"], state["cwd"])
-        finally:
-            core.harness_switch_rule(rule_id, state["was_off"])
-    else:
-        prompt = f"{state['context']}\n\n{case['scenario']}" if on else case["scenario"]
-        reply, session = state["answer"](prompt, state["model"], state["cwd"])
+        else:
+            # a runner without hooks of its own (operator 2026-11-06): Synapptic runs its prompt hook around it in
+            # a session of its own, so the rule reaches the model the way it would in Claude Code and the store
+            # says whether it did
+            session = f"bench-{secrets.token_hex(6)}"
+            context = hook_context(core, session, case["scenario"], state["cwd"])
+            prompt = f"{context}\n\n{case['scenario']}" if context else case["scenario"]
+            reply, _ = state["answer"](prompt, state["model"], state["cwd"])
+    finally:
+        core.harness_switch_rule(rule_id, state["was_off"])
     arm = state[name]
     if not reply:
         state["response_failures"] += 1
         say({"kind": "note", "run": run + 1, "arm": name,
              "message": f"no reply came back from {state['provider']} {state['model']} (the dashboard log has the provider's error)"})
         return
-    fired = (bool(session) and core.harness_rule_fired(session, rule_id)) if state["hooked"] else on
+    fired = bool(session) and core.harness_rule_fired(session, rule_id)
     arm["fired"] += int(fired)
     arm["replies"].append(reply[:400])
     say({"kind": "reply", "run": run + 1, "arm": name, "session": session or "", "fired": fired, "text": reply})
@@ -1510,56 +1529,61 @@ def _run_arm(state: dict, name: str, on: bool, run: int) -> None:
     arm["reasons"].append(verdict["reason"])
 
 
-def save_rule_benchmark(verdict: dict):
-    """The verdict as a file under the benchmarks directory: rules/{rule}_{timestamp}.json."""
-    target = BENCHMARKS_DIR / "rules"
-    target.mkdir(parents=True, exist_ok=True)
-    stamp = datetime.now(timezone.utc).strftime("%Y-%m-%d_%H%M%S")
-    path = target / f"{_safe_name(verdict['rule'])}_{stamp}.json"
-    with open(path, "w") as f:
-        json.dump(verdict, f, indent=2)
-    return path
-
-
-# A run over a scope (the Benchmark page: every rule under a card, the CLI's choices): {timestamp, project,
-# choices, verdicts, stopped}, one file per run under benchmarks/runs/, listed newest first and flushed as
-# `synapptic benchmark --flush-results` cleared the old results. The rules' own verdicts stay with the rules.
+# A run over a scope (the Benchmark page: the rules a seed picked under a card, the CLI's choices): {timestamp,
+# project, choices, selected, controls, verdicts, stopped}, kept in the database beside the rules (operator
+# 2026-11-06), listed newest first and flushed as `synapptic benchmark --flush-results` cleared the old
+# results. The rules' own verdicts stay with the rules. The runs and scenarios once kept as files under
+# the benchmarks directory are imported the first time the runs are listed, and their folders renamed.
 SCOPE_RUNS = "runs"
+IMPORTED_SUFFIX = ".imported"
 
 
-def save_scope_benchmark(run: dict):
-    """The run as a file: runs/{timestamp}.json."""
-    target = BENCHMARKS_DIR / SCOPE_RUNS
-    target.mkdir(parents=True, exist_ok=True)
-    stamp = datetime.now(timezone.utc).strftime("%Y-%m-%d_%H%M%S")
-    path = target / f"{stamp}.json"
-    serial = 1
-    while path.exists():   # two runs inside one second (a rerun on kept scenarios is quick): the second keeps its own file
-        serial += 1
-        path = target / f"{stamp}-{serial}.json"
-    with open(path, "w") as f:
-        json.dump(run, f, indent=2)
-    return path
+def save_scope_benchmark(run: dict) -> str:
+    """Keep the run; returns its id (from its timestamp, a serial added when the second is taken)."""
+    return require_core().harness_benchmark_run_save(json.dumps(run))
 
 
 def list_scope_benchmarks() -> list[dict]:
-    """Every saved run, newest first, each with its file's name as `id`."""
-    target = BENCHMARKS_DIR / SCOPE_RUNS
-    runs = []
-    for path in sorted(target.glob("*.json"), reverse=True) if target.exists() else []:
-        try:
-            with open(path) as f:
-                run = json.load(f)
-        except (OSError, json.JSONDecodeError):
-            continue
-        runs.append({"id": path.stem, **run})
-    return runs
+    """Every kept run, newest first, each with its id; the old files imported first when any are left."""
+    import_benchmark_files()
+    return list(require_core().harness_benchmark_runs(None))
 
 
 def flush_scope_benchmarks() -> int:
-    """Delete every saved run; how many went."""
-    target = BENCHMARKS_DIR / SCOPE_RUNS
-    paths = list(target.glob("*.json")) if target.exists() else []
-    for path in paths:
-        path.unlink()
-    return len(paths)
+    """Delete every kept run; how many went."""
+    return require_core().harness_benchmark_runs_flush()
+
+
+def import_benchmark_files() -> dict:
+    """One-time: the runs and scenarios kept as files before 2026-11-06 go into the database, oldest run first
+    so the order holds, and the folders are renamed so this never runs twice. Returns {runs, scenarios}."""
+    done = {"runs": 0, "scenarios": 0}
+    runs_dir = BENCHMARKS_DIR / SCOPE_RUNS
+    if runs_dir.is_dir():
+        for path in sorted(runs_dir.glob("*.json")):
+            try:
+                with open(path) as f:
+                    run = json.load(f)
+            except (OSError, json.JSONDecodeError):
+                continue
+            run.pop("id", None)
+            save_scope_benchmark(run)
+            done["runs"] += 1
+        runs_dir.rename(runs_dir.with_name(runs_dir.name + IMPORTED_SUFFIX))
+    scenarios_dir = BENCHMARKS_DIR / SCOPE_SCENARIOS
+    if scenarios_dir.is_dir():
+        for path in sorted(scenarios_dir.glob("*.json")):
+            try:
+                with open(path) as f:
+                    data = json.load(f)
+            except (OSError, json.JSONDecodeError):
+                continue
+            cases = data.get("scenarios") or {}
+            if data.get("format_version") != SCENARIO_FORMAT or not cases:
+                continue
+            scope = path.name.split("_seed", 1)[0]
+            key = scenarios_key("" if scope == "global" else scope, int(data.get("seed") or 0), str(data.get("model") or ""), list(cases))
+            save_scenarios(key, cases, int(data.get("seed") or 0), str(data.get("model") or ""))
+            done["scenarios"] += 1
+        scenarios_dir.rename(scenarios_dir.with_name(scenarios_dir.name + IMPORTED_SUFFIX))
+    return done

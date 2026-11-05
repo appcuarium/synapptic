@@ -13,13 +13,10 @@ import { useQueryClient } from '@tanstack/react-query';
 import { useCallback, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { PageHeader } from '@/components/layout/PageHeader';
-import { fieldClasses, labelClasses } from '@/components/machine/field';
+import { NumberStepper, SettingRow, SettingSelect } from '@/components/machine/SettingsForm';
 import { TileLabel } from '@/components/machine/TileLabel';
 import { TileStrip } from '@/components/machine/TileStrip';
 import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
 import { StatCell } from '@/features/sessions/SessionsPage';
@@ -38,12 +35,15 @@ const RUNS_QUERY = 'guards.benchmark.runs';
 const SELECTED_TILE_STRENGTH = 1;
 const UNSELECTED_TILE_STRENGTH = 0.15;
 // the CLI's --max-guards: how many rules of the scope the run takes
-const RULE_COUNTS = [1, 3, 5, 10, 20, 50];
+const MAX_RULES = 50;
 const DEFAULT_RULE_COUNT = 10;
 // the CLI's --seed (which rules, and the scenarios kept for them) and --temperature (the runner's)
 const DEFAULT_SEED = 0;
 const SEED_MAX = 999999;
-const TEMPERATURES = [0, 0.1, 0.2, 0.5, 0.7, 1];
+// a stepper from 0 to 1: a click steps a tenth, a typed value keeps two decimals (operator 2026-11-06)
+const MAX_TEMPERATURE = 1;
+const TEMPERATURE_STEP = 0.1;
+const TEMPERATURE_DECIMALS = 2;
 const DEFAULT_TEMPERATURE = 0.1;
 // the summary tiles, in the order the CLI printed them
 const VERDICTS = ['effective', 'redundant', 'ineffective', 'backfire', 'untestable', 'stopped'];
@@ -194,6 +194,8 @@ export function BenchmarkPage() {
   const start = useWsMutation<Record<string, unknown>, BenchmarkChoices & { project: string; limit: number }>('guards.benchmark.scope');
   const stop = useWsMutation<Record<string, unknown>, { id: string }>('guards.benchmark.stop');
   const flush = useWsMutation<{ flushed: number }, Record<string, never>>('guards.benchmark.flush', { onSuccess: refresh });
+  const forget = useWsMutation<{ flushed: number }, Record<string, never>>('guards.benchmark.flush_scenarios');
+  const [confirmForget, setConfirmForget] = useState(false);
   const [choices, setChoices] = useState<BenchmarkChoices | null>(null);
   const [limit, setLimit] = useState(DEFAULT_RULE_COUNT);
   const [seed, setSeed] = useState(DEFAULT_SEED);
@@ -271,39 +273,20 @@ export function BenchmarkPage() {
       <div className="grid grid-cols-1 gap-px bg-line border-b border-line">
         <div className="bg-page flex flex-col gap-3 px-4 py-4">
           <BenchmarkChoiceFields onChange={setChoices}>
-            <div className="flex flex-col gap-1">
-              <Label htmlFor="bench-rules" className={labelClasses}>Rules</Label>
-              <Select value={String(limit)} onValueChange={(n) => setLimit(Number(n))}>
-                <SelectTrigger id="bench-rules" className={fieldClasses}><SelectValue /></SelectTrigger>
-                <SelectContent className="text-muted-foreground">
-                  {RULE_COUNTS.map((n) => <SelectItem key={n} value={String(n)} className="focus:text-muted-foreground">{n}</SelectItem>)}
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="flex flex-col gap-1">
-              <Label htmlFor="bench-seed" className={labelClasses}>Seed</Label>
-              <Input id="bench-seed" type="number" inputMode="numeric" min={0} max={SEED_MAX} className={fieldClasses}
-                value={seed} onChange={(e) => setSeed(Math.max(0, Math.min(SEED_MAX, Math.floor(Number(e.target.value) || 0))))} />
-            </div>
-            <div className="flex flex-col gap-1">
-              <Label htmlFor="bench-temperature" className={labelClasses}>Temperature</Label>
-              <Select value={String(temperature)} onValueChange={(t) => setTemperature(Number(t))}>
-                <SelectTrigger id="bench-temperature" className={fieldClasses}><SelectValue /></SelectTrigger>
-                <SelectContent className="text-muted-foreground">
-                  {TEMPERATURES.map((t) => <SelectItem key={t} value={String(t)} className="focus:text-muted-foreground">{t === 0 ? '0: the same answer every run' : String(t)}</SelectItem>)}
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="flex flex-col gap-1">
-              <Label htmlFor="bench-scenarios" className={labelClasses}>Scenarios</Label>
-              <Select value={regenerate ? 'fresh' : 'kept'} onValueChange={(v) => setRegenerate(v === 'fresh')}>
-                <SelectTrigger id="bench-scenarios" className={fieldClasses}><SelectValue /></SelectTrigger>
-                <SelectContent className="text-muted-foreground">
-                  <SelectItem value="kept" className="focus:text-muted-foreground">the ones kept for the seed</SelectItem>
-                  <SelectItem value="fresh" className="focus:text-muted-foreground">generated again</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
+            <SettingRow id="bench-rules-label" label="Rules" note="how many rules the seed picks from the card">
+              <NumberStepper value={limit} onChange={setLimit} min={1} max={MAX_RULES} labelledBy="bench-rules-label" />
+            </SettingRow>
+            <SettingRow id="bench-seed-label" label="Seed" note="which rules, and the scenarios kept for them">
+              <NumberStepper value={seed} onChange={setSeed} min={0} max={SEED_MAX} labelledBy="bench-seed-label" />
+            </SettingRow>
+            <SettingRow id="bench-temperature-label" label="Temperature" note="the runner’s; 0 is the same answer every run">
+              <NumberStepper value={temperature} onChange={setTemperature} min={0} max={MAX_TEMPERATURE} step={TEMPERATURE_STEP} decimals={TEMPERATURE_DECIMALS} labelledBy="bench-temperature-label" />
+            </SettingRow>
+            <SettingRow id="bench-scenarios-label" label="Scenarios" note="kept for the seed, or generated again">
+              <SettingSelect id="bench-scenarios" labelledBy="bench-scenarios-label" value={regenerate ? 'fresh' : 'kept'} width="w-[180px]"
+                onValueChange={(v) => setRegenerate(v === 'fresh')}
+                options={[{ id: 'kept', label: 'the ones kept' }, { id: 'fresh', label: 'generated again' }]} />
+            </SettingRow>
           </BenchmarkChoiceFields>
           <div className="flex items-start justify-between gap-3">
             <span className="text-xs text-fg-faint">{runnerNote(choices)}</span>
@@ -385,23 +368,26 @@ export function BenchmarkPage() {
             <PastRunsStrip runs={saved} list={list} picked={picked || saved[0]?.id || ''} onPick={(id) => setPicked(id)} />
           )}
           <div className="flex items-end justify-between gap-3">
-            <div className="flex flex-col gap-1 text-sm">
-              <Label htmlFor="bench-compare" className={labelClasses}>Compare with</Label>
-              <Select value={compared || 'none'} onValueChange={(id) => setCompare(id === 'none' ? '' : id)}>
-                <SelectTrigger id="bench-compare" className={fieldClasses}><SelectValue /></SelectTrigger>
-                <SelectContent className="text-muted-foreground">
-                  <SelectItem value="none" className="focus:text-muted-foreground">nothing</SelectItem>
-                  {saved.map((run) => (
-                    <SelectItem key={run.id} value={run.id ?? ''} className="focus:text-muted-foreground">{runName(run, list)}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+            <div className="min-w-0 max-w-[420px] grow">
+              <SettingRow id="bench-compare-label" label="Compare with" note="a second run next to the picked one">
+                <SettingSelect id="bench-compare" labelledBy="bench-compare-label" value={compared || 'none'} width="w-[220px]"
+                  onValueChange={(id) => setCompare(id === 'none' ? '' : id)}
+                  options={[{ id: 'none', label: 'nothing' }, ...saved.map((run) => ({ id: run.id ?? '', label: runName(run, list) }))]} />
+              </SettingRow>
             </div>
-            <Button variant="secondary" className={buttonClasses} disabled={saved.length === 0 || flush.isPending}
-              onClick={() => { if (confirmFlush) { flush.mutate({}); setConfirmFlush(false); setPicked(''); setCompare(''); } else setConfirmFlush(true); }}
-              onBlur={() => setConfirmFlush(false)}>
-              {confirmFlush ? `Delete ${saved.length} run${saved.length === 1 ? '' : 's'}?` : 'Flush'}
-            </Button>
+            <span className="flex items-center gap-2 shrink-0">
+              {/* the CLI's --flush-tests: the kept scenarios go, the next run generates them again */}
+              <Button variant="secondary" className={buttonClasses} disabled={forget.isPending}
+                onClick={() => { if (confirmForget) { forget.mutate({}); setConfirmForget(false); } else setConfirmForget(true); }}
+                onBlur={() => setConfirmForget(false)}>
+                {confirmForget ? 'Forget every kept scenario?' : 'Forget scenarios'}
+              </Button>
+              <Button variant="secondary" className={buttonClasses} disabled={saved.length === 0 || flush.isPending}
+                onClick={() => { if (confirmFlush) { flush.mutate({}); setConfirmFlush(false); setPicked(''); setCompare(''); } else setConfirmFlush(true); }}
+                onBlur={() => setConfirmFlush(false)}>
+                {confirmFlush ? `Delete ${saved.length} run${saved.length === 1 ? '' : 's'}?` : 'Flush'}
+              </Button>
+            </span>
           </div>
         </div>
       </div>
