@@ -20,7 +20,7 @@ import { useWsMutation, useWsQuery } from '@/lib/ws/react';
 import { changeSummary, formatWhen } from './format';
 import { RuleChart } from './RuleChart';
 import { BenchmarkPanel } from './BenchmarkPanel';
-import { type Band, ratioTone, ruleOnBand, ruleOnTone, verdictTone } from './tone';
+import { type Band, ratioTone, ruleOnTone, verdictBand, verdictTone } from './tone';
 import type { BenchmarkChoices, GuardChange, GuardNumbers, GuardNumbersList, GuardRow, GuardsList, ProfileView, RuleVerdict } from './types';
 import { useBenchmarkRun } from './useBenchmark';
 
@@ -62,7 +62,8 @@ export function scopeOf(rule: GuardRow): string {
 // measured nothing.
 export function labelTone(verdicts: RuleVerdict[]): 'amber' | 'rose' | 'outline' | undefined {
   const latest = verdicts[0];
-  const band: Band = latest ? ruleOnBand(latest.with, latest.without) : 'none';
+  // the latest verdict's own colour (operator 2026-11-06: redundant is amber), the outline with no verdict
+  const band: Band = latest ? verdictBand(latest.classification) : 'none';
   return band === 'teal' ? undefined : band === 'none' ? 'outline' : band;
 }
 

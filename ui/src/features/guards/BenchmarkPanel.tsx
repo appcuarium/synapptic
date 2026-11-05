@@ -8,6 +8,7 @@ import { type ReactNode, useEffect, useRef, useState } from 'react';
 import { NumberStepper, SettingRow, SettingSelect, settingsGridClasses } from '@/components/machine/SettingsForm';
 import { Button } from '@/components/ui/button';
 import type { DashboardConfig, ProviderInfo } from '@/features/settings/types';
+import { cn } from '@/lib/cn';
 import { useWsQuery } from '@/lib/ws/react';
 import type { BenchmarkChoices, BenchmarkEvent } from './types';
 import { SCOPE_JOB, type BenchmarkRun } from './useBenchmark';
@@ -24,6 +25,37 @@ const WRAPPED_NOTE = 'through Synapptic’s hook';
 const MIN_RUNS = 1;
 const MAX_RUNS = 9;
 const DEFAULT_RUNS = 3;
+
+// The picks made here, kept in the browser the way the theme is (lib/theme.ts): '' for a provider or model
+// never picked, so Settings' own apply until the user chooses otherwise.
+const STORAGE_KEY = 'synapptic-benchmark';
+interface StoredChoices { runner_provider: string; runner_model: string; judge_provider: string; judge_model: string; runs: number }
+const NO_CHOICES: StoredChoices = { runner_provider: '', runner_model: '', judge_provider: '', judge_model: '', runs: DEFAULT_RUNS };
+
+function storedChoices(): StoredChoices {
+  try {
+    const value = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? 'null') as Partial<StoredChoices> | null;
+    if (!value || typeof value !== 'object') return NO_CHOICES;
+    const runs = Number(value.runs);
+    return {
+      runner_provider: typeof value.runner_provider === 'string' ? value.runner_provider : '',
+      runner_model: typeof value.runner_model === 'string' ? value.runner_model : '',
+      judge_provider: typeof value.judge_provider === 'string' ? value.judge_provider : '',
+      judge_model: typeof value.judge_model === 'string' ? value.judge_model : '',
+      runs: Number.isInteger(runs) && runs >= MIN_RUNS && runs <= MAX_RUNS ? runs : DEFAULT_RUNS,
+    };
+  } catch {
+    return NO_CHOICES;
+  }
+}
+
+function rememberChoices(choices: StoredChoices): void {
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(choices));
+  } catch {
+    // storage blocked: the picks still hold for this page view
+  }
+}
 // the streaming box: half the viewport, opened when the run starts
 const LOG_HEIGHT = '50vh';
 
@@ -84,7 +116,9 @@ function EventRow({ event, named }: { event: BenchmarkEvent; named?: boolean }) 
 
 // The run streams inside a fixed box that opens to half the viewport when the run starts and scrolls itself
 // to the newest event (operator 2026-11-05: not a window that keeps growing); the stream starts at the top.
-export function BenchmarkLog({ events, open, named }: { events: BenchmarkEvent[]; open: boolean; named?: boolean }) {
+// `bordered`: a line above the box while it is open (operator 2026-11-06, the Benchmark page: the stream apart
+// from the settings rows), the page's own line, and the rows' padding under it.
+export function BenchmarkLog({ events, open, named, bordered }: { events: BenchmarkEvent[]; open: boolean; named?: boolean; bordered?: boolean }) {
   const logRef = useRef<HTMLDivElement>(null);
   // the box follows the newest event, after the event has laid out
   useEffect(() => {
@@ -95,7 +129,7 @@ export function BenchmarkLog({ events, open, named }: { events: BenchmarkEvent[]
     return () => cancelAnimationFrame(frame);
   }, [events.length]);
   return (
-    <div ref={logRef} className="overflow-y-auto transition-[height] duration-300 ease-out" style={{ height: open ? LOG_HEIGHT : 0 }}>
+    <div ref={logRef} className={cn('overflow-y-auto transition-[height] duration-300 ease-out', bordered && open && 'border-t border-line pt-4')} style={{ height: open ? LOG_HEIGHT : 0 }}>
       <div className="flex flex-col gap-3">
         {events.map((event, i) => <EventRow key={i} event={event} named={named} />)}
       </div>
@@ -110,15 +144,21 @@ export function BenchmarkLog({ events, open, named }: { events: BenchmarkEvent[]
 export function BenchmarkChoiceFields({ onChange, children }: { onChange: (choices: BenchmarkChoices | null) => void; children?: ReactNode }) {
   const config = useWsQuery<DashboardConfig>('config.get', {}, 'config');
   const providers = useWsQuery<ProviderInfo[]>('providers.list');
-  const [runnerProvider, setRunnerProvider] = useState(DEFAULT_RUNNER_PROVIDER);
-  const [runnerModel, setRunnerModel] = useState('');
-  const [judgeProvider, setJudgeProvider] = useState('');
-  const [judgeModel, setJudgeModel] = useState('');
-  const [runs, setRuns] = useState(DEFAULT_RUNS);
+  // the runner and the judge keep what was picked here (the browser remembers it, as it does the theme);
+  // what was never picked opens on the provider and model configured in Settings (operator 2026-11-06)
+  const [runnerProvider, setRunnerProvider] = useState(() => storedChoices().runner_provider);
+  const [runnerModel, setRunnerModel] = useState(() => storedChoices().runner_model);
+  const [judgeProvider, setJudgeProvider] = useState(() => storedChoices().judge_provider);
+  const [judgeModel, setJudgeModel] = useState(() => storedChoices().judge_model);
+  const [runs, setRuns] = useState(() => storedChoices().runs);
+  useEffect(() => {
+    rememberChoices({ runner_provider: runnerProvider, runner_model: runnerModel, judge_provider: judgeProvider, judge_model: judgeModel, runs });
+  }, [runnerProvider, runnerModel, judgeProvider, judgeModel, runs]);
 
   const providerList = providers.data ?? [];
-  const runner = providerList.find((p) => p.id === runnerProvider);
-  const runnerModelId = runnerModel || (runnerProvider === config.data?.provider ? config.data?.model : runner?.default_model) || '';
+  const runnerProviderId = runnerProvider || config.data?.provider || '';
+  const runner = providerList.find((p) => p.id === runnerProviderId);
+  const runnerModelId = runnerModel || (runnerProviderId === config.data?.provider ? config.data?.model : runner?.default_model) || '';
   const runnerModels = runner?.models.some((m) => m.id === runnerModelId)
     ? runner.models
     : [...(runnerModelId ? [{ id: runnerModelId, label: runnerModelId }] : []), ...(runner?.models ?? [])];
@@ -128,16 +168,16 @@ export function BenchmarkChoiceFields({ onChange, children }: { onChange: (choic
   const models = judge?.models.some((m) => m.id === judgeModelId)
     ? judge.models
     : [...(judgeModelId ? [{ id: judgeModelId, label: judgeModelId }] : []), ...(judge?.models ?? [])];
-  const ready = Boolean(judgeProviderId && runnerModelId);
+  const ready = Boolean(judgeProviderId && runnerProviderId && runnerModelId);
   useEffect(() => {
-    onChange(ready ? { runs, runner_provider: runnerProvider, runner_model: runnerModelId, judge_provider: judgeProviderId, judge_model: judgeModelId } : null);
-  }, [onChange, ready, runs, runnerProvider, runnerModelId, judgeProviderId, judgeModelId]);
+    onChange(ready ? { runs, runner_provider: runnerProviderId, runner_model: runnerModelId, judge_provider: judgeProviderId, judge_model: judgeModelId } : null);
+  }, [onChange, ready, runs, runnerProviderId, runnerModelId, judgeProviderId, judgeModelId]);
 
   // Machine's settings rows (operator 2026-11-06): the label and its line on the left, the control on the right
   return (
     <div className={settingsGridClasses}>
       <SettingRow id="bench-runner-provider-label" label="Runner provider" note="who answers the scenarios">
-        <SettingSelect id="bench-runner-provider" labelledBy="bench-runner-provider-label" value={runnerProvider} width="w-[220px]"
+        <SettingSelect id="bench-runner-provider" labelledBy="bench-runner-provider-label" value={runnerProviderId} width="w-[220px]"
           onValueChange={(id) => { setRunnerProvider(id); setRunnerModel(''); }}
           options={providerList.map((p) => ({ id: p.id, label: `${p.name} · ${p.id === DEFAULT_RUNNER_PROVIDER ? OWN_HOOKS_NOTE : WRAPPED_NOTE}` }))} />
       </SettingRow>
@@ -182,7 +222,7 @@ export function BenchmarkPanel({ run, onRun, onStop }: {
           {run.running && (
             <Button variant="secondary" className={buttonClasses} onClick={onStop}>Stop</Button>
           )}
-          <Button variant="secondary" className={buttonClasses} disabled={run.running || !choices}
+          <Button className={buttonClasses} disabled={run.running || !choices}
             onClick={() => { if (choices) onRun(choices); }}>
             {run.running ? 'Running…' : 'Run'}
           </Button>

@@ -14,17 +14,18 @@ import { useCallback, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { PageHeader } from '@/components/layout/PageHeader';
 import { NumberStepper, SettingRow, SettingSelect } from '@/components/machine/SettingsForm';
-import { TileLabel } from '@/components/machine/TileLabel';
+import { TileLabel, tileLabelStyle } from '@/components/machine/TileLabel';
 import { TileStrip } from '@/components/machine/TileStrip';
 import { Button } from '@/components/ui/button';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
 import { StatCell } from '@/features/sessions/SessionsPage';
+import { cn } from '@/lib/cn';
 import { useWsMutation, useWsQuery } from '@/lib/ws/react';
 import { BenchmarkChoiceFields, BenchmarkLog, runnerNote } from './BenchmarkPanel';
 import { formatWhen } from './format';
 import { ALL, GLOBAL, appliesTo, labelTone, runToggleClasses, scopeOf } from './GuardsPage';
-import { ratioTone, ruleOnTone, verdictTone } from './tone';
+import { type Band, ratioBand, ratioTone, ruleOnTone, verdictBand, verdictTone } from './tone';
 import type { BenchmarkChoices, GuardRow, GuardsList, RuleVerdict, RunControls, ScopeRun } from './types';
 import { SCOPE_JOB, useScopeBenchmarkRun } from './useBenchmark';
 
@@ -38,7 +39,7 @@ const UNSELECTED_TILE_STRENGTH = 0.15;
 const MAX_RULES = 50;
 const DEFAULT_RULE_COUNT = 10;
 // the CLI's --seed (which rules, and the scenarios kept for them) and --temperature (the runner's)
-const DEFAULT_SEED = 0;
+const DEFAULT_SEED = 1337;   // operator 2026-11-06
 const SEED_MAX = 999999;
 // a stepper from 0 to 1: a click steps a tenth, a typed value keeps two decimals (operator 2026-11-06)
 const MAX_TEMPERATURE = 1;
@@ -62,6 +63,46 @@ function projectLabel(list: GuardsList, project: string): string {
 function runName(run: ScopeRun, list: GuardsList | undefined): string {
   const stamp = formatWhen(Date.parse(run.timestamp) / 1000);
   return `${list ? projectLabel(list, run.project) : run.project} · ${run.verdicts.length} rule${run.verdicts.length === 1 ? '' : 's'} · ${stamp}${run.stopped ? ' · stopped' : ''}`;
+}
+
+// The results rows wear the cards' and labels' schema (operator 2026-11-06: "copy the color schema from the
+// slider cards and the rule labels"): the dark teal fill, the tiles' text for a label (the name line's 80%),
+// the saturated 400 shades for the verdict values as Machine's stats bar has them on its dark surface (operator:
+// "the verdict colors should be darker, not those washed colors"), the name line's shade for a zero.
+// both banner rows: the cells centred vertically, room above and below (operator 2026-11-06: "let it breathe")
+const BANNER_ROW = 'flex items-center justify-around px-1 sm:px-2 py-2 min-h-[52px] overflow-x-auto';
+const STRIP_LABEL = 'text-tile-fg/80';
+// the values a step larger than the stat cell's own (operator 2026-11-06: "make the values text bigger")
+const STRIP_VALUE = 'text-base sm:text-2xl';
+const STRIP_PLAIN = cn('text-tile-fg', STRIP_VALUE);   // a fact (testable): the tiles' value text
+// measured on machine.dev/strategy-analytics (2026-11-06): values text-teal-400 and text-rose-400; amber is
+// not in its strip, its page uses text-amber-500
+const STRIP_TEXT: Record<Band, string> = {
+  teal: cn('text-teal-400', STRIP_VALUE), amber: cn('text-amber-500', STRIP_VALUE), rose: cn('text-rose-400', STRIP_VALUE), none: cn('text-tile-fg/80', STRIP_VALUE),
+};
+// a verdict count's colour: its verdict's, plain at zero; untestable and stopped are the run's own health
+// (operator 2026-11-06, as judge failures): teal at zero, rose above
+const HEALTH_COUNTS = new Set(['untestable', 'stopped']);
+
+function healthBand(count: number): Band {
+  return count > 0 ? 'rose' : 'teal';
+}
+
+function countBand(name: string, count: number): Band {
+  if (HEALTH_COUNTS.has(name)) return healthBand(count);
+  return count > 0 ? verdictBand(name) : 'none';
+}
+
+// The closing summary's numbers as the CLI printed them: whole percents, the interval only from five testable
+// rules (the CLI's bar), and its caveat that the rules may be correlated.
+const CI_MIN_TESTABLE = 5;
+
+function percent(rate: number): string {
+  return `${Math.round(rate * 100)}%`;
+}
+
+function interval(ci: [number, number], testable: number): string {
+  return testable >= CI_MIN_TESTABLE ? `95% CI ${percent(ci[0])} to ${percent(ci[1])}, assuming independent rules` : 'too few rules for an interval';
 }
 
 function controlsNote(controls: RunControls | null | undefined): string {
@@ -128,15 +169,16 @@ function ScopeRuleRow({ verdict, rule, other, otherName }: { verdict: RuleVerdic
       {rule?.context && <p className="text-[13px] text-fg-subtle">{rule.context}</p>}
       {/* the session browser's stats row: one row at every width, smaller cells on phones */}
       <div className="flex items-start justify-around px-1 sm:px-2 min-h-[52px] overflow-x-auto">
+        {/* the rule's own numbers at the results rows' size (operator 2026-11-06) */}
         <StatCell label="rule on" value={`${verdict.with.passes}/${verdict.with.valid}`}
-          valueClassName={ruleOnTone(verdict.with, verdict.without)}
+          valueClassName={cn(ruleOnTone(verdict.with, verdict.without), STRIP_VALUE)}
           sub={`complied with the rule on; the rule reached the model in ${verdict.fired} of ${verdict.runs} runs`} />
         <StatCell label="rule off" value={`${verdict.without.passes}/${verdict.without.valid}`}
-          valueClassName={ratioTone(verdict.without.passes, verdict.without.valid)} sub="complied with the rule off" />
-        <StatCell label="verdict" value={verdict.classification} valueClassName={verdictTone(verdict.classification)}
+          valueClassName={cn(ratioTone(verdict.without.passes, verdict.without.valid), STRIP_VALUE)} sub="complied with the rule off" />
+        <StatCell label="verdict" value={verdict.classification} valueClassName={cn(verdictTone(verdict.classification), STRIP_VALUE)}
           sub={`majority vote over ${verdict.runs} runs per arm · judge ${verdict.judge.model}, runner ${verdict.respondent.model}`} />
         {other && (
-          <StatCell label={otherName} value={other.classification} valueClassName={verdictTone(other.classification)}
+          <StatCell label={otherName} value={other.classification} valueClassName={cn(verdictTone(other.classification), STRIP_VALUE)}
             sub={`the compared run: rule on ${other.with.passes}/${other.with.valid}, rule off ${other.without.passes}/${other.without.valid}`} />
         )}
       </div>
@@ -166,10 +208,26 @@ function ScopeRuleRow({ verdict, rule, other, otherName }: { verdict: RuleVerdic
 }
 
 // The strip of past runs, the rule's benchmark runs' way: one toggle per saved run, newest first.
-function PastRunsStrip({ runs, picked, onPick, list }: { runs: ScopeRun[]; picked: string; onPick: (id: string) => void; list: GuardsList | undefined }) {
+// The run in flight as the strip's first card (operator 2026-11-06): the Sessions strip's live dot pulsing,
+// the word running, the card, how many rules are done of the run's, and when it started; picked while it runs.
+export const LIVE_RUN = 'live';
+export interface LiveRun { label: string; done: number; total: number; startedAt: number }
+
+function PastRunsStrip({ runs, picked, onPick, list, running }: {
+  runs: ScopeRun[]; picked: string; onPick: (id: string) => void; list: GuardsList | undefined; running?: LiveRun;
+}) {
   return (
-    <ToggleGroup type="single" spacing={2} aria-label="Past runs" value={picked}
+    <ToggleGroup type="single" spacing={2} aria-label="Past runs" value={running ? LIVE_RUN : picked}
       onValueChange={(value) => { if (value) onPick(value); }} className="flex justify-start overflow-x-auto strip-scroll">
+      {running && (
+        <ToggleGroupItem value={LIVE_RUN} className={runToggleClasses}>
+          <span className="flex items-center gap-2">
+            {/* the labels' dark teal (operator 2026-11-06), pulsing */}
+            <span className="size-1.5 rounded-full motion-safe:animate-pulse" style={tileLabelStyle} aria-hidden="true" />
+            <span>running · {running.label} · {running.done}/{running.total} rules · since {formatWhen(running.startedAt / 1000)}</span>
+          </span>
+        </ToggleGroupItem>
+      )}
       {runs.map((run, index) => (
         <ToggleGroupItem key={run.id} value={run.id ?? String(index)} className={runToggleClasses}>
           <span>run {runs.length - index} · {runName(run, list)}</span>
@@ -202,6 +260,7 @@ export function BenchmarkPage() {
   const [temperature, setTemperature] = useState(DEFAULT_TEMPERATURE);
   const [regenerate, setRegenerate] = useState(false);   // generate the scenarios again instead of the ones kept for the seed
   const [picked, setPicked] = useState('');       // a past run's id; "" is the newest (or the one just finished)
+  const [startedAt, setStartedAt] = useState(0);  // when the run in flight started, for its card in the strip
   const [compare, setCompare] = useState('');     // another run's id to read beside the picked one
   const [confirmFlush, setConfirmFlush] = useState(false);
 
@@ -230,6 +289,7 @@ export function BenchmarkPage() {
   const counts = VERDICTS.map((name) => [name, verdicts.filter((verdict) => verdict.classification === name).length] as const);
   const failure = start.error ?? stop.error ?? flush.error ?? runs.error;
   const label = projectLabel(list, project);
+  const liveRun: LiveRun | undefined = bench.running ? { label, done: bench.verdicts.length, total: Math.min(limit, scoped.length), startedAt } : undefined;
   return (
     <section className="flex flex-col">
       <PageHeader title="Benchmark">
@@ -294,13 +354,14 @@ export function BenchmarkPage() {
               {bench.running && (
                 <Button variant="secondary" className={buttonClasses} onClick={() => stop.mutate({ id: SCOPE_JOB })}>Stop</Button>
               )}
-              <Button variant="secondary" className={buttonClasses} disabled={bench.running || !choices || scoped.length === 0}
-                onClick={() => { if (choices) { startBench(); start.mutate({ ...choices, project, limit, seed, temperature, refresh: regenerate }); } }}>
+              {/* the filled button (operator 2026-11-06: Run dark teal, as every filled button) */}
+              <Button className={buttonClasses} disabled={bench.running || !choices || scoped.length === 0}
+                onClick={() => { if (choices) { setStartedAt(Date.now()); startBench(); start.mutate({ ...choices, project, limit, seed, temperature, refresh: regenerate }); } }}>
                 {bench.running ? `Running… ${bench.verdicts.length} of ${Math.min(limit, scoped.length)} done` : 'Run'}
               </Button>
             </span>
           </div>
-          <BenchmarkLog events={bench.events} open={bench.running || bench.events.length > 0} named />
+          <BenchmarkLog events={bench.events} open={bench.running || bench.events.length > 0} named bordered />
           {bench.error && <p className="text-sm text-fg-muted">Not done: {bench.error}</p>}
         </div>
       </div>
@@ -313,21 +374,53 @@ export function BenchmarkPage() {
       </PageHeader>
       <div className="grid grid-cols-1 gap-px bg-line border-b border-line">
         {/* the runs' history as the rule card shows it: one toggle per saved run, newest first, the picked one read below */}
-        {saved.length > 0 && (
+        {(saved.length > 0 || liveRun) && (
           <div className="bg-page px-4 py-3">
-            <PastRunsStrip runs={saved} list={list} picked={picked || saved[0]?.id || ''} onPick={(id) => setPicked(id)} />
+            <PastRunsStrip runs={saved} list={list} picked={picked || saved[0]?.id || ''} onPick={(id) => setPicked(id)} running={liveRun} />
           </div>
         )}
-        {verdicts.length === 0 && (
-          <p className="bg-page p-4 text-sm text-fg-subtle gutter">{bench.running ? 'the first rule is running…' : 'No run yet. Pick a scope and press Run.'}</p>
+        {verdicts.length === 0 && !bench.running && (
+          <p className="bg-page p-4 text-sm text-fg-subtle gutter">No run yet. Pick a scope and press Run.</p>
         )}
-        {verdicts.length > 0 && (
-          <div className="bg-page flex items-start justify-around px-1 sm:px-2 min-h-[52px] overflow-x-auto">
+        {/* the tiles from the run's first second (operator 2026-11-06), the counts ticking up as each rule's verdict lands,
+            with how many rules are done of the run's */}
+        {/* the stats rows on one surface in the cards' dark teal (operator 2026-11-06), a lighter teal line between
+            the two rows, not the page's line */}
+        {(verdicts.length > 0 || bench.running || Boolean(shownRun?.summary)) && (
+        <div style={tileLabelStyle}>
+        {(verdicts.length > 0 || bench.running) && (
+          <div className={BANNER_ROW}>
+            {bench.running && (
+              <StatCell label="done" value={`${bench.verdicts.length}/${Math.min(limit, scoped.length)}`} valueClassName={STRIP_TEXT.teal} labelClassName={STRIP_LABEL}
+                sub="rules judged so far, of the rules in this run" />
+            )}
             {counts.map(([name, count]) => (
-              <StatCell key={name} label={name} value={String(count)} valueClassName={count > 0 ? verdictTone(name) : 'text-fg-subtle'}
+              <StatCell key={name} label={name} value={String(count)} valueClassName={STRIP_TEXT[countBand(name, count)]} labelClassName={STRIP_LABEL}
                 sub={`rules whose verdict was ${name}`} />
             ))}
           </div>
+        )}
+        {/* the previous CLI's closing lines (operator 2026-11-06), once the run is done: testable of total, the pass
+            rates with the rule on and off (the 95% interval as the tooltip, from five testable rules), the net
+            impact with the rules improved and regressed, the judge's failures over its calls and its model */}
+        {!bench.running && shownRun?.summary && (
+          <div className={cn(BANNER_ROW, (verdicts.length > 0) && 'border-t border-teal-700')}>
+            {/* testable, runner and judge are facts, not verdicts: the tiles' text (operator 2026-11-06) */}
+            <StatCell label="testable" value={`${shownRun.summary.testable}/${shownRun.summary.total}`} valueClassName={STRIP_PLAIN} labelClassName={STRIP_LABEL}
+              sub="rules the judge could read, of the rules in the run" />
+            <StatCell label="rule on" value={percent(shownRun.summary.with_pass_rate)} valueClassName={STRIP_TEXT[ratioBand(shownRun.summary.with_pass_rate, 1)]} labelClassName={STRIP_LABEL}
+              sub={`runs that complied with the rule on, over every judged run; ${interval(shownRun.summary.with_ci_95, shownRun.summary.testable)}`} />
+            <StatCell label="rule off" value={percent(shownRun.summary.without_pass_rate)} valueClassName={STRIP_TEXT[ratioBand(shownRun.summary.without_pass_rate, 1)]} labelClassName={STRIP_LABEL}
+              sub={`runs that complied with the rule off, over every judged run; ${interval(shownRun.summary.without_ci_95, shownRun.summary.testable)}`} />
+            <StatCell label="impact" value={`${shownRun.summary.delta >= 0 ? '+' : ''}${percent(shownRun.summary.delta)}`}
+              valueClassName={STRIP_TEXT[shownRun.summary.delta > 0 ? 'teal' : shownRun.summary.delta < 0 ? 'rose' : 'none']} labelClassName={STRIP_LABEL}
+              sub={`the rule on's hit rate less the rule off's; ${shownRun.summary.effective} rules improved, ${shownRun.summary.backfire} regressed`} />
+            <StatCell label="judge failures" value={String(shownRun.summary.judge_failures)}
+              valueClassName={STRIP_TEXT[healthBand(shownRun.summary.judge_failures)]} labelClassName={STRIP_LABEL}
+              sub={`of ${shownRun.summary.judge_calls} judge calls`} />
+          </div>
+        )}
+        </div>
         )}
         {verdicts.map((verdict) => (
           <ScopeRuleRow key={verdict.rule} verdict={verdict} rule={byId.get(verdict.rule)}
@@ -363,9 +456,9 @@ export function BenchmarkPage() {
       </PageHeader>
       <div className="grid grid-cols-1 gap-px bg-line border-b border-line">
         <div className="bg-page flex flex-col gap-3 px-4 py-4">
-          {saved.length === 0 && <p className="text-sm text-fg-subtle">None yet.</p>}
-          {saved.length > 0 && (
-            <PastRunsStrip runs={saved} list={list} picked={picked || saved[0]?.id || ''} onPick={(id) => setPicked(id)} />
+          {saved.length === 0 && !liveRun && <p className="text-sm text-fg-subtle">None yet.</p>}
+          {(saved.length > 0 || liveRun) && (
+            <PastRunsStrip runs={saved} list={list} picked={picked || saved[0]?.id || ''} onPick={(id) => setPicked(id)} running={liveRun} />
           )}
           <div className="flex items-end justify-between gap-3">
             <div className="min-w-0 max-w-[420px] grow">

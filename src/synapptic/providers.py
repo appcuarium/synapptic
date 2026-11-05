@@ -502,6 +502,58 @@ def migrate_legacy_settings(config: dict) -> bool:
 
 CONFIG_PATH = Path.home() / ".synapptic" / "config.yaml"
 
+# Every provider configured keeps its own settings under config["providers"][<id>] (2026-11-06), so configuring
+# a second one never loses the first; the top level (provider, model, api_key, api_url) is the default, the one
+# every call without a choice runs on, and what the CLI always read.
+PROVIDER_SETTINGS = ("model", "api_key", "api_url")
+
+
+def provider_entry(config: dict, provider: str) -> dict:
+    """The settings saved for a provider: its own entry, else the top level when it is the default, else empty."""
+    entries = config.get("providers")
+    entry = entries.get(provider) if isinstance(entries, dict) else None
+    if isinstance(entry, dict):
+        return {name: entry[name] for name in PROVIDER_SETTINGS if entry.get(name)}
+    if provider == config.get("provider"):
+        return {name: config[name] for name in PROVIDER_SETTINGS if config.get(name)}
+    return {}
+
+
+def provider_config(config: dict, provider: str) -> dict:
+    """The full config for a call on a chosen provider: the config with that provider's own settings in place
+    of the default's (a runner on OpenAI uses OpenAI's key while Anthropic stays the default)."""
+    chosen = {**config, "provider": provider}
+    for name in PROVIDER_SETTINGS:
+        chosen.pop(name, None)
+    chosen.update(provider_entry(config, provider))
+    return chosen
+
+
+def record_provider(config: dict, provider: str, settings: dict, default: bool) -> None:
+    """Keep a provider's settings in its entry; make it the default (the top level) when asked or when it is
+    the default already. The entry keeps what the settings leave out (a key saved earlier)."""
+    entries = config.get("providers")
+    entries = dict(entries) if isinstance(entries, dict) else {}
+    # a file from before the entries: the default's own settings get their entry first, so they survive another
+    # provider being saved or made the default
+    current = config.get("provider")
+    if current and current not in entries and provider_entry(config, current):
+        entries[current] = provider_entry(config, current)
+    # the entry starts from what is saved for the provider (the default's key stays when its model alone changes)
+    entry = {**provider_entry(config, provider), **{name: value for name, value in settings.items() if name in PROVIDER_SETTINGS and value}}
+    for name in PROVIDER_SETTINGS:
+        if name in settings and not settings[name]:
+            entry.pop(name, None)
+    entries[provider] = entry
+    config["providers"] = entries
+    # the first provider configured is the default until another is made so
+    if default or provider == config.get("provider") or not config.get("provider"):
+        config["provider"] = provider
+        for name in PROVIDER_SETTINGS:
+            config.pop(name, None)
+        config.update(entry)
+        config.setdefault("model", "")
+
 
 def load_config() -> dict:
     """Load synaptic configuration. Returns defaults if no config file.

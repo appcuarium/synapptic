@@ -91,8 +91,14 @@ def config_show():
             click.echo(f"Rule keyword:    {harness.keyword()}")
         except (CoreMissing, ValueError, harness.HarnessError) as exc:
             click.echo(f"Harness:         store unavailable ({exc})")
-    click.echo(f"Provider:        {provider_name} ({provider})")
+    click.echo(f"Provider:        {provider_name} ({provider}), the default")
     click.echo(f"Model:           {model}")
+    # every other provider configured, with its own model (2026-11-06)
+    configured = config.get("providers") if isinstance(config.get("providers"), dict) else {}
+    others = [f"{PROVIDERS.get(name, {}).get('name', name)} ({name}): {entry.get('model') or '-'}"
+              for name, entry in configured.items() if name != provider and isinstance(entry, dict)]
+    if others:
+        click.echo(f"Also configured: {'; '.join(others)}")
     click.echo(f"Profiling mode:  {mode}")
     click.echo(f"Outputs:         {', '.join(outputs)}")
     click.echo(f"Rules:           {'on' if rules_enabled(config) else 'off'}")
@@ -128,21 +134,26 @@ def config_provider():
 
     config = load_config()
 
+    # Every provider configured keeps its own settings (2026-11-06); the default is the one every call
+    # without a choice runs on. The list marks the default and the others configured, preselects the default.
+    default_provider = config.get("provider") or ""
+    configured = config.get("providers") if isinstance(config.get("providers"), dict) else {}
     click.echo("LLM provider for extraction and synthesis:\n")
     provider_keys = list(PROVIDERS.keys())
     for i, key in enumerate(provider_keys, 1):
         info = PROVIDERS[key]
-        current = " (current)" if key == config.get("provider") else ""
-        click.echo(f"  {i}. {info['name']}{current}")
+        mark = " (default)" if key == default_provider else " (configured)" if key in configured else ""
+        click.echo(f"  {i}. {info['name']}{mark}")
         click.echo(f"     {info['description']}")
 
     click.echo()
-    default_idx = provider_keys.index(config.get("provider", "claude-cli")) + 1
+    default_idx = provider_keys.index(default_provider if default_provider in provider_keys else "claude-cli") + 1
     choice = click.prompt("Select provider", type=click.IntRange(1, len(provider_keys)),
                           default=default_idx)
     provider = provider_keys[choice - 1]
     info = PROVIDERS[provider]
-    config["provider"] = provider
+    saved = providers.provider_entry(config, provider)   # what this provider has already
+    settings: dict = {}
 
     # Model - show available models or prompt for custom
     default_model = info.get("default_model", "sonnet")
@@ -157,44 +168,51 @@ def config_provider():
             click.echo(f"     {description}")
 
         click.echo()
-        # Keep the current model preselected while it is still offered; otherwise the provider's default
-        # (a model the provider retired was already replaced by the default when the config was loaded).
-        preselected = config.get("model") if config.get("model") in model_ids else default_model
+        # Keep this provider's saved model preselected while it is still offered; otherwise the provider's
+        # default (a model the provider retired was already replaced by the default when the config was loaded).
+        preselected = saved.get("model") if saved.get("model") in model_ids else default_model
         try:
             model_choice = click.prompt(
                 "Select model",
                 type=click.IntRange(1, len(available_models)),
                 default=model_ids.index(preselected) + 1
             )
-            config["model"] = model_ids[model_choice - 1]
+            settings["model"] = model_ids[model_choice - 1]
         except (ValueError, IndexError):
             # If default model not in list, just use the first one
-            config["model"] = model_ids[0]
+            settings["model"] = model_ids[0]
     else:
         # No predefined models, prompt for custom
-        config["model"] = click.prompt("Model", default=default_model)
+        settings["model"] = click.prompt("Model", default=saved.get("model") or default_model)
 
     # API key
     if info.get("requires_key"):
-        existing_key = config.get("api_key", "")
+        existing_key = saved.get("api_key", "")
         masked = f"...{existing_key[-8:]}" if len(existing_key) > 8 else "(not set)"
         click.echo(f"  Current key: {masked}")
         new_key = click.prompt("API key", default="", show_default=False)
         if new_key:
-            config["api_key"] = new_key
-
-    # Message Batches: asked only where this provider and model support them
-    ask_batch_settings(config)
+            settings["api_key"] = new_key
 
     # API URL
     if info.get("requires_url") or info.get("default_url"):
-        default_url = info.get("default_url", config.get("api_url", ""))
-        config["api_url"] = click.prompt("API URL", default=default_url)
+        default_url = saved.get("api_url") or info.get("default_url", "")
+        settings["api_url"] = click.prompt("API URL", default=default_url)
+
+    # The default: the first provider configured, the default itself, or on the user's word
+    make_default = provider == default_provider or not default_provider or click.confirm("Set default?", default=False)
+    providers.record_provider(config, provider, settings, default=make_default)
+    chosen = providers.provider_config(config, provider)
+
+    # Message Batches: asked only where this provider and model support them
+    ask_batch_settings(chosen)
+    if "batches" in chosen:
+        config["batches"] = chosen["batches"]
 
     save_config(config)
-    click.echo(f"\nProvider set: {info['name']}, Model: {config['model']}")
+    click.echo(f"\nProvider set: {info['name']}, Model: {chosen['model']}{' (default)' if make_default else ''}")
     click.echo("Testing the connection with one short call...")
-    reply = providers.call_llm("Reply with exactly: ok", config=config)
+    reply = providers.call_llm("Reply with exactly: ok", config=chosen)
     if reply:
         click.echo(f"  Connection OK (model replied: {reply[:40]!r})")
     else:
@@ -745,16 +763,15 @@ def benchmark(project, max_guards, provider, model, verbose, seed, refresh, runs
     from synapptic.benchmark import run_benchmark, save_benchmark, record_model_verdicts, format_results
     from synapptic.providers import load_config, PROVIDERS
 
-    llm_config = load_config()
-    if provider:
-        llm_config["provider"] = provider
+    # the runner and the judge run on the default unless chosen here; a chosen provider brings its own
+    # settings (its key, its URL), never the default's (2026-11-06)
+    config = load_config()
+    llm_config = providers.provider_config(config, provider) if provider else dict(config)
     if model:
         llm_config["model"] = model
 
     # Build judge config (separate from response generation)
-    j_config = dict(llm_config)
-    if judge_provider:
-        j_config["provider"] = judge_provider
+    j_config = providers.provider_config(config, judge_provider) if judge_provider else dict(llm_config)
     if judge_model:
         j_config["model"] = judge_model
 

@@ -98,7 +98,8 @@ def test_the_endpoint_url_is_a_setting_where_the_provider_takes_one(client, conf
         assert listed["custom"]["requires_url"] is True and listed["custom"]["default_url"] == ""
         assert listed["ollama"]["requires_url"] is False and listed["ollama"]["default_url"] == "http://localhost:11434/v1"
         assert listed["anthropic"]["requires_url"] is False and listed["anthropic"]["default_url"] == ""
-        saved = request(ws, "u1", "config.update", {"provider": "custom", "model": "glm-5", "api_url": "http://10.0.0.7:8080/v1"})["result"]
+        # made the default (2026-11-06, one entry per provider): the top level is the default's, so it shows here
+        saved = request(ws, "u1", "config.update", {"provider": "custom", "model": "glm-5", "api_url": "http://10.0.0.7:8080/v1", "set_default": True})["result"]
         assert saved["provider"] == "custom" and saved["model"] == "glm-5" and saved["api_url"] == "http://10.0.0.7:8080/v1"
         assert request(ws, "u2", "config.update", {"api_url": "ftp://nope"})["code"] == "invalid_params"
         assert "api_url" not in request(ws, "u3", "config.update", {"api_url": ""})["result"]
@@ -111,11 +112,13 @@ def test_a_saved_custom_endpoint_becomes_a_card_of_its_own(client, config_path):
     entry, another URL adds one; the entries survive a switch to another provider."""
     with client.websocket_connect("/api/ws") as ws:
         ws.receive_json()
+        # the view says per entry whether it holds a key of its own (2026-11-06, per-endpoint keys), never the key
         first = request(ws, "e1", "config.update", {"provider": "custom", "model": "glm-5", "api_url": "http://10.0.0.7:8080/v1", "endpoint_name": "the studio box"})["result"]
-        assert first["endpoints"] == [{"name": "the studio box", "url": "http://10.0.0.7:8080/v1", "model": "glm-5"}]
-        again = request(ws, "e2", "config.update", {"model": "glm-5-air"})["result"]
-        assert again["endpoints"] == [{"name": "the studio box", "url": "http://10.0.0.7:8080/v1", "model": "glm-5-air"}]
-        more = request(ws, "e3", "config.update", {"api_url": "https://llm.example.net/v1", "model": "qwen3"})["result"]
+        # Anthropic stays the default (2026-11-06): the custom card's saves go to its own entry, so "default" is False
+        assert first["endpoints"] == [{"name": "the studio box", "url": "http://10.0.0.7:8080/v1", "model": "glm-5", "api_key_set": False, "default": False}]
+        again = request(ws, "e2", "config.update", {"provider": "custom", "model": "glm-5-air"})["result"]
+        assert again["endpoints"] == [{"name": "the studio box", "url": "http://10.0.0.7:8080/v1", "model": "glm-5-air", "api_key_set": False, "default": False}]
+        more = request(ws, "e3", "config.update", {"provider": "custom", "api_url": "https://llm.example.net/v1", "model": "qwen3"})["result"]
         assert [e["name"] for e in more["endpoints"]] == ["the studio box", "llm.example.net"]
         back = request(ws, "e4", "config.update", {"provider": "anthropic", "model": "claude-sonnet-5-5"})["result"]
         assert len(back["endpoints"]) == 2
@@ -123,13 +126,16 @@ def test_a_saved_custom_endpoint_becomes_a_card_of_its_own(client, config_path):
 
 
 def test_a_saved_custom_endpoint_can_be_removed(client, config_path):
-    """Removing an endpoint by its URL drops its entry (operator 2026-11-06: its card goes); the other entries
-    stay; when it was the URL in use, its URL, model and key go with it (operator: "all info about the
-    custom endpoint goes"); an unknown URL changes nothing."""
+    """Removing an endpoint by its URL drops its entry (operator 2026-11-06: its card goes) and only its own
+    data (operator: "all info for the selected model, not the full file"): when it was the URL in use, its URL
+    and model go, and the key in use too when it is the endpoint's own (typed with it); the other entries
+    stay; an unknown URL changes nothing. The browser never sees an endpoint's key, only that it has one."""
     with client.websocket_connect("/api/ws") as ws:
         ws.receive_json()
-        request(ws, "r1", "config.update", {"provider": "custom", "model": "glm-5", "api_url": "http://10.0.0.7:8080/v1", "endpoint_name": "the studio box"})
-        request(ws, "r2", "config.update", {"api_url": "https://llm.example.net/v1", "model": "qwen3", "api_key": "sk-test-key"})
+        # the custom card made the default (2026-11-06): what goes shows at the top level too
+        request(ws, "r1", "config.update", {"provider": "custom", "model": "glm-5", "api_url": "http://10.0.0.7:8080/v1", "endpoint_name": "the studio box", "set_default": True})
+        saved_with_key = request(ws, "r2", "config.update", {"provider": "custom", "api_url": "https://llm.example.net/v1", "model": "qwen3", "api_key": "sk-test-key"})["result"]
+        assert [(e["name"], e["api_key_set"], "api_key" in e) for e in saved_with_key["endpoints"]] == [("the studio box", False, False), ("llm.example.net", True, False)]
         gone = request(ws, "r3", "config.update", {"remove_endpoint": "https://llm.example.net/v1"})["result"]
         assert [e["name"] for e in gone["endpoints"]] == ["the studio box"]
         assert gone["model"] == "" and not gone.get("api_url") and not gone["api_key_set"]
@@ -137,6 +143,48 @@ def test_a_saved_custom_endpoint_can_be_removed(client, config_path):
         assert [e["name"] for e in same["endpoints"]] == ["the studio box"]
     saved = yaml.safe_load(config_path.read_text())
     assert [e["name"] for e in saved["endpoints"]] == ["the studio box"] and "api_url" not in saved and "api_key" not in saved
+
+
+def test_removing_an_endpoint_leaves_the_other_providers_settings_alone(client, config_path):
+    """Operator 2026-11-06, after a custom endpoint's delete took the Anthropic key: a key saved with another
+    provider is not the endpoint's, so removing the endpoint (even the one in use, even saved without a key
+    of its own) leaves that key, and the provider comes back with it."""
+    with client.websocket_connect("/api/ws") as ws:
+        ws.receive_json()
+        anthropic = request(ws, "p1", "config.update", {"provider": "anthropic", "model": "claude-sonnet-5-5", "api_key": "sk-ant-key"})["result"]
+        assert anthropic["api_key_set"] and anthropic["api_key_hint"] == "-key"
+        custom = request(ws, "p2", "config.update", {"provider": "custom", "model": "glm-5", "api_url": "http://10.0.0.7:8080/v1", "endpoint_name": "the studio box"})["result"]
+        # Anthropic stays the default (2026-11-06): the endpoint lives in the custom card's own entry
+        assert custom["endpoints"] == [{"name": "the studio box", "url": "http://10.0.0.7:8080/v1", "model": "glm-5", "api_key_set": False, "default": False}]
+        assert custom["provider"] == "anthropic" and custom["providers"]["custom"]["api_url"] == "http://10.0.0.7:8080/v1"
+        gone = request(ws, "p3", "config.update", {"remove_endpoint": "http://10.0.0.7:8080/v1"})["result"]
+        assert gone["endpoints"] == [] and gone["providers"]["custom"] == {"model": "", "api_url": "", "api_key_set": False, "api_key_hint": ""}
+        assert gone["provider"] == "anthropic" and gone["model"] == "claude-sonnet-5-5" and gone["api_key_set"] and gone["api_key_hint"] == "-key"
+        back = request(ws, "p4", "config.update", {"provider": "anthropic", "model": "claude-sonnet-5-5"})["result"]
+        assert back["api_key_set"] and back["api_key_hint"] == "-key"
+    saved = yaml.safe_load(config_path.read_text())
+    assert saved["api_key"] == "sk-ant-key" and saved["provider"] == "anthropic" and saved["model"] == "claude-sonnet-5-5"
+
+
+def test_every_provider_keeps_its_own_settings_and_one_is_the_default(client, config_path):
+    """Operator 2026-11-06 ("I should be able to configure multiple providers and be asked if I want to set it
+    as default"): a card saved goes to its own entry and the default stays; with set_default the card becomes
+    the default (the top level, what the CLI reads) and the previous default keeps its entry; the view lists
+    every provider configured with its model and key hint, never a key."""
+    with client.websocket_connect("/api/ws") as ws:
+        ws.receive_json()
+        openai = request(ws, "d1", "config.update", {"provider": "openai", "model": "gpt-5", "api_key": "sk-openai-key"})["result"]
+        assert openai["provider"] == "anthropic" and openai["model"] == "claude-sonnet-5-5" and openai["default_provider"] == "anthropic"
+        assert openai["providers"]["openai"] == {"model": "gpt-5", "api_url": "", "api_key_set": True, "api_key_hint": "-key"}
+        assert openai["providers"]["anthropic"]["model"] == "claude-sonnet-5-5" and "sk-openai-key" not in json.dumps(openai)
+        moved = request(ws, "d2", "config.update", {"provider": "openai", "set_default": True})["result"]
+        assert moved["provider"] == "openai" and moved["model"] == "gpt-5" and moved["api_key_hint"] == "-key"
+        assert moved["providers"]["anthropic"]["model"] == "claude-sonnet-5-5" and moved["providers"]["anthropic"]["api_key_set"]
+        back = request(ws, "d3", "config.update", {"provider": "anthropic", "set_default": True})["result"]
+        assert back["provider"] == "anthropic" and back["model"] == "claude-sonnet-5-5" and back["api_key_hint"] == SECRET[-4:]
+    saved = yaml.safe_load(config_path.read_text())
+    assert saved["provider"] == "anthropic" and saved["api_key"] == SECRET
+    assert saved["providers"]["openai"] == {"model": "gpt-5", "api_key": "sk-openai-key"}
 
 
 def test_the_rule_keyword_is_read_and_written_with_the_rules_not_the_file(client, config_path, tmp_path, monkeypatch):

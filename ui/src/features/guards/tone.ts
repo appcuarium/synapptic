@@ -6,7 +6,7 @@ const AMBER_FROM = 0.4;
 export type Band = 'teal' | 'amber' | 'rose' | 'none';
 
 export const TEAL = 'text-primary';
-export const AMBER = 'text-amber-600 dark:text-amber-400';
+export const AMBER = 'text-amber-600 dark:text-amber-500';   // dark: Machine's strip amber, the chip's and the results' (2026-11-06)
 export const ROSE = 'text-rose-600 dark:text-rose-400';
 const NONE = 'text-fg-subtle';
 const TEXT: Record<Band, string> = { teal: TEAL, amber: AMBER, rose: ROSE, none: NONE };
@@ -42,4 +42,10 @@ const VERDICT_BANDS: Record<string, Band> = { effective: 'teal', redundant: 'amb
 export function verdictTone(classification: string): string {
   const band = VERDICT_BANDS[classification];
   return band ? TEXT[band] : SLATE;
+}
+
+// The verdict's band for a label (operator 2026-11-06: a redundant rule wears amber, the verdict's colour, not
+// the teal its pass ratio would give); none for stopped and untestable.
+export function verdictBand(classification: string): Band {
+  return VERDICT_BANDS[classification] ?? 'none';
 }

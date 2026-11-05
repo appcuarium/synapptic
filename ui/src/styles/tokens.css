@@ -47,9 +47,11 @@
   --primary: rgb(var(--teal-700));            /* labels, links, "on" (AA on light surfaces) */
   --primary-hover: rgb(var(--teal-800));
   --primary-foreground: rgb(var(--teal-50));
-  --primary-strong: rgb(var(--teal-700));     /* filled buttons (Save) */
-  --primary-strong-hover: rgb(var(--teal-600));
-  --primary-strong-foreground: rgb(var(--teal-50));   /* text on a button: a shade of its own colour */
+  /* filled buttons (Save, Run): the cards' and labels' schema, the dark teal fill (tileColor's LABEL_BACKGROUND)
+     with the tiles' text, the same in both themes (operator 2026-11-06) */
+  --primary-strong: rgb(7 73 69);
+  --primary-strong-hover: rgb(var(--teal-900));
+  --primary-strong-foreground: rgb(var(--teal-100));
   /* States on a light page are solid colours (translucent ones wash out over teal-25) */
   --toggle-on: rgb(var(--teal-700));
   --toggle-on-hover: rgb(var(--teal-600));
@@ -100,9 +102,9 @@
   --primary: rgb(var(--teal-400));
   --primary-hover: rgb(var(--teal-300));
   --primary-foreground: rgb(var(--slate-900));
-  --primary-strong: rgb(var(--teal-700));
-  --primary-strong-hover: rgb(var(--teal-600));
-  --primary-strong-foreground: rgb(var(--teal-50));
+  --primary-strong: rgb(7 73 69);             /* filled buttons: the cards' and labels' schema, as in light */
+  --primary-strong-hover: rgb(var(--teal-900));
+  --primary-strong-foreground: rgb(var(--teal-100));
   /* Machine's translucent states, measured on Strategy Analytics */
   --toggle-on: color-mix(in oklab, rgb(var(--teal-400)) 20%, transparent);
   --toggle-on-hover: color-mix(in oklab, rgb(var(--teal-400)) 30%, transparent);

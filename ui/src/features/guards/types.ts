@@ -105,8 +105,30 @@ export interface RunControls {
 // A run over a scope (the Benchmark page, the previous CLI's full benchmark): the rules picked by the seed,
 // each on its kept scenario through the one-rule benchmark, kept as a file and listed newest first
 // (guards.benchmark.runs).
+// The previous CLI's closing summary of a run over a scope (2026-11-06): rates are 0..1, intervals [low, high].
+export interface RunSummary {
+  total: number;
+  testable: number;
+  effective: number;
+  redundant: number;
+  backfire: number;
+  ineffective: number;
+  untestable: number;
+  unclear: number;
+  with_pass_rate: number;
+  without_pass_rate: number;
+  delta: number;
+  with_ci_95: [number, number];
+  without_ci_95: [number, number];
+  judge_failures: number;
+  judge_calls: number;
+  control_comply: boolean | null;
+  control_violate: boolean | null;
+}
+
 export interface ScopeRun {
   id?: string;                 // the saved file's name (absent on the run just finished, until listed)
+  summary?: RunSummary;        // the closing summary (absent while the run is in flight)
   timestamp: string;
   project: string;             // "" Global, "__all__" every rule, else a slug
   choices: BenchmarkChoices & { limit: number };

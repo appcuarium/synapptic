@@ -76,6 +76,7 @@ class ConfigPatch(BaseModel):
     api_url: str | None = Field(default=None, max_length=512)   # the endpoint's URL (custom, a local server, an API); "" clears it
     endpoint_name: str | None = Field(default=None, max_length=64)   # a custom endpoint's name: it becomes a card of its own
     remove_endpoint: str | None = Field(default=None, max_length=512)   # the URL of a saved custom endpoint to drop (its card goes)
+    set_default: bool | None = None   # the card saved becomes the default (the top level, what every call without a choice runs on)
     batches: BatchesPatch | None = None
     include_headless_sessions: bool | None = None
     write_rules: bool | None = None
@@ -98,6 +99,21 @@ def public_config(config: dict) -> dict:
     view = {name: value for name, value in config.items() if name != "api_key"}
     view["api_key_set"] = bool(key)
     view["api_key_hint"] = key[-API_KEY_HINT_LENGTH:] if len(key) > API_KEY_HINT_LENGTH else ""
+    # a saved endpoint's own key stays on the server too: the browser sees whether it has one; the default
+    # endpoint is the custom provider's URL in use while the custom provider is the default
+    view["endpoints"] = [{**{name: value for name, value in e.items() if name != "api_key"}, "api_key_set": bool(e.get("api_key")),
+                          "default": config.get("provider") == CUSTOM_PROVIDER and e.get("url") == config.get("api_url")}
+                         for e in (config.get("endpoints") or []) if isinstance(e, dict)]
+    # every provider configured, with its own settings (the key as set / last 4 only); the default named
+    entries = config.get("providers") if isinstance(config.get("providers"), dict) else {}
+    names = {*entries, *([config["provider"]] if config.get("provider") else [])}
+    view["providers"] = {}
+    for name in names:
+        entry = providers.provider_entry(config, name)
+        entry_key = str(entry.get("api_key") or "")
+        view["providers"][name] = {"model": entry.get("model", ""), "api_url": entry.get("api_url", ""), "api_key_set": bool(entry_key),
+                                   "api_key_hint": entry_key[-API_KEY_HINT_LENGTH:] if len(entry_key) > API_KEY_HINT_LENGTH else ""}
+    view["default_provider"] = config.get("provider", "")
     view["write_rules"] = rules_enabled(config)   # explicit: the file leaves it out until switched off
     view["tuning"] = harness.tuning_level(config)  # explicit, for the same reason
     keyword = rule_keyword()
@@ -107,47 +123,60 @@ def public_config(config: dict) -> dict:
 
 
 def apply_patch(config: dict, patch: ConfigPatch) -> dict:
-    """Return the config with the patch applied. Raises MethodError for an unknown provider."""
+    """Return the config with the patch applied. Raises MethodError for an unknown provider.
+
+    `provider` names the card being saved (2026-11-06, one entry per provider): its model, key and URL go to
+    that provider's own entry, and to the top level (the default, what every call without a choice and the
+    CLI run on) only when the card is the default already, the first one configured, or `set_default` says so.
+    """
     updated = dict(config)
-    if patch.provider is not None:
-        if patch.provider not in providers.PROVIDERS:
-            raise MethodError(ErrorCode.INVALID_PARAMS, f"unknown provider: {patch.provider}")
-        updated["provider"] = patch.provider
+    if patch.provider is not None and patch.provider not in providers.PROVIDERS:
+        raise MethodError(ErrorCode.INVALID_PARAMS, f"unknown provider: {patch.provider}")
+    card = patch.provider or updated.get("provider") or ""
+    settings: dict = {}
     if patch.model is not None:
-        updated["model"] = patch.model
+        settings["model"] = patch.model
     if patch.api_key is not None:
-        if patch.api_key:
-            updated["api_key"] = patch.api_key
-        else:
-            updated.pop("api_key", None)
+        settings["api_key"] = patch.api_key   # "" clears it
     if patch.api_url is not None:
         url = patch.api_url.strip()
         if url and not url.startswith(("http://", "https://")):
             raise MethodError(ErrorCode.INVALID_PARAMS, "the API URL starts with http:// or https://")
-        if url:
-            updated["api_url"] = url
-        else:
-            updated.pop("api_url", None)
-    if updated.get("provider") == CUSTOM_PROVIDER and updated.get("api_url"):
+        settings["api_url"] = url
+    if card and (settings or patch.provider is not None or patch.set_default):
+        providers.record_provider(updated, card, settings, default=bool(patch.set_default))
+    custom = providers.provider_entry(updated, CUSTOM_PROVIDER)
+    if card == CUSTOM_PROVIDER and custom.get("api_url"):
         # a saved custom endpoint is a card of its own (operator 2026-11-06): one entry per URL, named by
         # the user (or after its host), its model the one saved with it; a save with the same URL updates it
         entries = [dict(e) for e in (updated.get("endpoints") or []) if isinstance(e, dict) and e.get("url")]
-        known = next((e for e in entries if e["url"] == updated["api_url"]), None)
-        name = (patch.endpoint_name or "").strip() or (known or {}).get("name") or urlparse(updated["api_url"]).netloc or updated["api_url"]
-        entry = {"name": name, "url": updated["api_url"], "model": updated.get("model") or ""}
+        known = next((e for e in entries if e["url"] == custom["api_url"]), None)
+        name = (patch.endpoint_name or "").strip() or (known or {}).get("name") or urlparse(custom["api_url"]).netloc or custom["api_url"]
+        entry = {"name": name, "url": custom["api_url"], "model": custom.get("model") or ""}
+        # a key typed with the endpoint is the endpoint's own (operator 2026-11-06: deleting an endpoint takes
+        # only its own data; dropping the key blindly took the Anthropic key); an endpoint picked again puts
+        # its own key back in use
+        if patch.api_key:
+            entry["api_key"] = patch.api_key
+        elif known and known.get("api_key"):
+            entry["api_key"] = known["api_key"]
+            providers.record_provider(updated, CUSTOM_PROVIDER, {"api_key": known["api_key"]}, default=False)
         if known:
             known.update(entry)
         else:
             entries.append(entry)
         updated["endpoints"] = entries
     if patch.remove_endpoint:
-        # a saved endpoint is dropped with its card (operator 2026-11-06: "all info about the custom endpoint
-        # goes"); when it was the one in use, its URL, model and key go with it
-        updated["endpoints"] = [e for e in (updated.get("endpoints") or []) if not (isinstance(e, dict) and e.get("url") == patch.remove_endpoint)]
-        if updated.get("api_url") == patch.remove_endpoint:
-            updated.pop("api_url", None)
-            updated.pop("api_key", None)
-            updated["model"] = ""
+        # a saved endpoint is dropped with its card and only its own data: its URL and model when it was the one
+        # in use, and the key in use only when it is the endpoint's own; another provider's key stays
+        entries = [e for e in (updated.get("endpoints") or []) if isinstance(e, dict)]
+        removed = next((e for e in entries if e.get("url") == patch.remove_endpoint), None)
+        updated["endpoints"] = [e for e in entries if e is not removed]
+        if removed and custom.get("api_url") == patch.remove_endpoint:
+            gone = {"api_url": "", "model": ""}
+            if removed.get("api_key") and custom.get("api_key") == removed["api_key"]:
+                gone["api_key"] = ""
+            providers.record_provider(updated, CUSTOM_PROVIDER, gone, default=False)
     if patch.batches is not None and patch.batches.extract is not None:
         updated["batches"] = {**(updated.get("batches") or {}), "extract": patch.batches.extract}
     if patch.include_headless_sessions is not None:
@@ -407,10 +436,9 @@ EMPTY_NUMBERS = {"fires": 0, "idle": 0, "misses": 0, "chars": 0, "sessions": 0, 
 
 def benchmark_history(value) -> list:
     """The rule's benchmark verdicts as a list, newest first (a verdict stored alone before the history was kept
-    is a list of one)."""
-    if isinstance(value, list):
-        return value
-    return [value] if isinstance(value, dict) else []
+    is a list of one), each read with the current rule (2026-11-06: a stored word is not the verdict)."""
+    verdicts = value if isinstance(value, list) else [value] if isinstance(value, dict) else []
+    return [benchmark.reclassified(v) for v in verdicts]
 
 
 RULE_BY_HAND = "hand"   # a rule's origin when the store records none: written with `guards add`
@@ -627,16 +655,21 @@ def benchmark_cwd(rule_id: str) -> str | None:
     return None
 
 
+def judge_config_for(config: dict, provider: str | None, model: str | None) -> dict:
+    """The judge's config: the default's, or the chosen provider's own settings (its key, its URL) with the
+    chosen model; the CLI's --judge-provider / --judge-model."""
+    judge_config = providers.provider_config(config, provider) if provider else dict(config)
+    if model:
+        judge_config["model"] = model
+    return judge_config
+
+
 def run_benchmark_job(query: GuardBenchmarkParams, report) -> dict:
     """The job itself, in a worker thread: `report(event)` hears every step. The judge is the configured
     provider and model unless the page chose another (the CLI's --judge-provider / --judge-model); the
     runner is the chosen provider and model (Claude Code by default)."""
     config = providers.load_config()
-    judge_config = dict(config)
-    if query.judge_provider:
-        judge_config["provider"] = query.judge_provider
-    if query.judge_model:
-        judge_config["model"] = query.judge_model
+    judge_config = judge_config_for(config, query.judge_provider, query.judge_model)
     return benchmark.run_rule_benchmark(query.id, config=config, judge_config=judge_config, runs=query.runs,
                                         cwd=benchmark_cwd(query.id), progress=report, model=query.runner_model or None,
                                         provider=query.runner_provider or None, cancel=benchmark_cancels.get(query.id))
@@ -689,6 +722,7 @@ ALL_PROJECTS = "__all__"
 SCOPE_LIMIT_DEFAULT = 10
 SCOPE_LIMIT_MAX = 50
 SCOPE_SEED_MAX = 999_999
+SCOPE_SEED_DEFAULT = 1337   # the page opens on it (operator 2026-11-06)
 SCOPE_TEMPERATURE_DEFAULT = 0.1   # the previous CLI's default for the runner
 
 
@@ -701,7 +735,7 @@ class GuardBenchmarkScopeParams(BaseModel):
     runner_model: str = Field(default="", max_length=128)
     judge_provider: str = Field(default="", max_length=64)
     judge_model: str = Field(default="", max_length=128)
-    seed: int = Field(default=0, ge=0, le=SCOPE_SEED_MAX)          # the CLI's --seed: which rules, and the scenarios kept for them
+    seed: int = Field(default=SCOPE_SEED_DEFAULT, ge=0, le=SCOPE_SEED_MAX)   # the CLI's --seed: which rules, and the scenarios kept for them
     refresh: bool = False                                          # the CLI's --refresh: generate the scenarios again
     temperature: float = Field(default=SCOPE_TEMPERATURE_DEFAULT, ge=0, le=2)   # the CLI's --temperature for the runner
 
@@ -730,11 +764,7 @@ def run_scope_job(query: GuardBenchmarkScopeParams, report, cancel: threading.Ev
     event)` hears every step, `report(rule id, {done, verdict})` each rule's end; the run's own notes come
     under the scope id), the rule's own switch put back after it; stopped at the next rule when the user says so."""
     config = providers.load_config()
-    judge_config = dict(config)
-    if query.judge_provider:
-        judge_config["provider"] = query.judge_provider
-    if query.judge_model:
-        judge_config["model"] = query.judge_model
+    judge_config = judge_config_for(config, query.judge_provider, query.judge_model)
     provider = query.runner_provider or benchmark.RULE_RESPONDENT_PROVIDER
     model = query.runner_model or benchmark.respondent_model(config, provider)
     say = functools.partial(report, SCOPE_JOB)
@@ -777,6 +807,7 @@ def run_scope_job(query: GuardBenchmarkScopeParams, report, cancel: threading.Ev
         "verdicts": verdicts,
         "stopped": cancel.is_set(),
     }
+    run["summary"] = benchmark.scope_summary(run)   # the previous CLI's closing summary (operator 2026-11-06)
     benchmark.save_scope_benchmark(run)
     return run
 

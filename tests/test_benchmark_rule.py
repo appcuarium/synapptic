@@ -128,6 +128,77 @@ def runner_calls(calls, prompt, config=None, temperature=None, session_id=None):
     return "Run `pytest -n 4`." if TEXT in prompt else "Run `pytest`."
 
 
+def test_redundant_means_both_arms_perfect():
+    """Operator 2026-11-06 ("this is not redundant, redundant only when the results are the same and both
+    perfect results"): 3/3 on against 2/3 off is effective, both perfect is redundant, the same but short is
+    ineffective, fewer on than off is backfire, no valid run untestable, one arm without a run unclear."""
+    assert benchmark.classify_verdict(3, 3, 2, 3) == "effective"
+    assert benchmark.classify_verdict(3, 3, 3, 3) == "redundant"
+    assert benchmark.classify_verdict(2, 3, 2, 3) == "ineffective"
+    assert benchmark.classify_verdict(0, 3, 0, 3) == "ineffective"
+    assert benchmark.classify_verdict(1, 3, 2, 3) == "backfire"
+    assert benchmark.classify_verdict(0, 0, 0, 0) == "untestable"
+    assert benchmark.classify_verdict(2, 3, 0, 0) == "unclear"
+    # the bar for effective (operator: "ineffective if its less than FULL/FULL or at most 4/5 of all runs"):
+    # the rule on must pass every run or 4 of 5, beating the rule off is not enough on its own
+    assert benchmark.classify_verdict(1, 3, 0, 3) == "ineffective"
+    assert benchmark.classify_verdict(2, 3, 0, 3) == "ineffective"
+    assert benchmark.classify_verdict(4, 5, 2, 5) == "effective"
+    assert benchmark.classify_verdict(3, 5, 0, 5) == "ineffective"
+    assert benchmark.classify_verdict(5, 5, 4, 5) == "effective"
+    assert benchmark.classify_verdict(4, 5, 5, 5) == "backfire"
+
+
+def test_stored_verdicts_are_read_with_the_current_rule(own_store):
+    """Operator 2026-11-06 ("the last one is still marked as redundant despite having 3/3 vs 2/3"): a run kept
+    with the old word is read with the current rule, its summary with it; a stopped verdict keeps its word."""
+    arm = lambda passes, valid: {"passes": passes, "valid": valid, "score": "PASS", "reasons": [], "fired": 0, "replies": []}
+    benchmark.save_scope_benchmark({"timestamp": "2026-11-05T20:00:00Z", "project": "", "choices": {"runs": 3}, "rules": 2, "controls": None, "stopped": False, "verdicts": [
+        {"rule": "a", "classification": "redundant", "with": arm(3, 3), "without": arm(2, 3), "judge_failures": 0},
+        {"rule": "b", "classification": "stopped", "with": arm(0, 0), "without": arm(0, 0), "judge_failures": 0},
+    ]})
+    run = benchmark.list_scope_benchmarks()[0]
+    assert [v["classification"] for v in run["verdicts"]] == ["effective", "stopped"]
+    assert run["summary"]["effective"] == 1 and run["summary"]["redundant"] == 0
+
+
+def test_a_scope_run_carries_the_previous_clis_closing_summary():
+    """Operator 2026-11-06 ("I had this output at the end of the benchmark before"): a run over a scope sums its
+    verdicts the way the CLI's closing lines did: testable of total, the pass rates with the rule on and off
+    with their intervals, the net impact with the rules improved and regressed, the judge's failures over its
+    calls, the controls. The rates count hits over every judged run, not a per-rule majority (operator:
+    "it should count the hits as impact, not the majority"): on 3+3+1 of 9, off 0+3+3 of 9."""
+    arm = lambda passes, valid, score: {"passes": passes, "valid": valid, "score": score, "reasons": [], "fired": 0, "replies": []}
+    run = {"project": "", "controls": {"comply": True, "violate": False, "reasons": {}}, "verdicts": [
+        {"rule": "a", "classification": "effective", "with": arm(3, 3, "PASS"), "without": arm(0, 3, "FAIL"), "judge_failures": 1},
+        {"rule": "b", "classification": "redundant", "with": arm(3, 3, "PASS"), "without": arm(3, 3, "PASS"), "judge_failures": 0},
+        {"rule": "c", "classification": "untestable", "with": arm(0, 0, "UNKNOWN"), "without": arm(0, 0, "UNKNOWN"), "judge_failures": 0},
+        {"rule": "d", "classification": "backfire", "with": arm(1, 3, "FAIL"), "without": arm(3, 3, "PASS"), "judge_failures": 0},
+    ]}
+    summary = benchmark.scope_summary(run)
+    assert (summary["total"], summary["testable"], summary["effective"], summary["redundant"], summary["backfire"], summary["untestable"]) == (4, 3, 1, 1, 1, 1)
+    assert summary["with_pass_rate"] == pytest.approx(7 / 9) and summary["without_pass_rate"] == pytest.approx(6 / 9)
+    assert summary["delta"] == pytest.approx(1 / 9) and len(summary["with_ci_95"]) == 2 and 0 < summary["with_ci_95"][0] < 7 / 9 < summary["with_ci_95"][1] <= 1
+    assert summary["judge_failures"] == 1 and summary["judge_calls"] == 18
+    assert summary["control_comply"] is True and summary["control_violate"] is False
+
+
+def test_a_chosen_runner_or_judge_brings_its_own_providers_settings():
+    """Operator 2026-11-06 (one entry per provider, one default): a runner or judge on a provider other than
+    the default takes that provider's own key, URL and model, never the default's; the default's own stay
+    when it is the one chosen."""
+    config = {"provider": "anthropic", "model": "claude-sonnet-5-5", "api_key": "sk-ant-key",
+              "providers": {"openai": {"model": "gpt-5", "api_key": "sk-openai-key"},
+                            "ollama": {"model": "qwen3", "api_url": "http://10.0.0.7:11434/v1"}}}
+    openai = benchmark.runner_for("openai", config, 0.1).keywords["config"]
+    assert (openai["provider"], openai["model"], openai["api_key"], openai.get("api_url")) == ("openai", "gpt-5", "sk-openai-key", None)
+    ollama = benchmark.runner_for("ollama", config, 0.1).keywords["config"]
+    assert (ollama["provider"], ollama["model"], ollama.get("api_key"), ollama["api_url"]) == ("ollama", "qwen3", None, "http://10.0.0.7:11434/v1")
+    anthropic = benchmark.runner_for("anthropic", config, 0.1).keywords["config"]
+    assert (anthropic["model"], anthropic["api_key"]) == ("claude-sonnet-5-5", "sk-ant-key")
+    assert benchmark.respondent_model(config, "openai") == "gpt-5" and benchmark.respondent_model(config, "anthropic") == "claude-sonnet-5-5"
+
+
 def test_a_runner_without_hooks_gets_the_rule_through_synapptics_own_hook(own_store, monkeypatch):
     """Any provider as the runner (operator 2026-11-06): a model on Ollama has no hooks of its own, so Synapptic
     runs its prompt hook around it with the rule switched as the arm needs: the on arm gets the rule's card

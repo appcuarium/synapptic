@@ -8,19 +8,24 @@ import { useEffect, useState } from 'react';
 import { PageHeader } from '@/components/layout/PageHeader';
 import { notify } from '@/components/machine/Notice';
 import { SettingInput, SettingRow, SettingSelect, SettingToggle, SettingsSection } from '@/components/machine/SettingsForm';
-import { TONE_CLASSES } from '@/components/machine/TileLabel';
+import { TONE_CLASSES, tileLabelStyle } from '@/components/machine/TileLabel';
 import { TileStrip } from '@/components/machine/TileStrip';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { cn } from '@/lib/cn';
 import { useWsMutation, useWsQuery } from '@/lib/ws/react';
-import { TUNING_LEVELS, type ConfigPatch, type CustomEndpoint, type DashboardConfig, type ProviderInfo, type TuningLevel } from './types';
+import { TUNING_LEVELS, type ConfigPatch, type CustomEndpoint, type DashboardConfig, type ProviderInfo, type ProviderSettings, type TuningLevel } from './types';
 
 // Colours, weight and touch height come from the Button variants (template tokens); only the mockup's 2px corners here.
 const buttonClasses = 'rounded-xs shadow-none';
 // A delete wears the labels' rose (TileLabel's rose tone, the same in both themes; operator 2026-11-06: the
 // theme's colours, not shadcn's destructive variant), the page's button shape otherwise.
 const deleteButtonClasses = cn(buttonClasses, TONE_CLASSES.rose, 'hover:bg-rose-700');
+// Machine's Production button (strategy edit page, measured 2026-11-06: h-6 px-2.5 rounded 11px uppercase
+// tracking-wider medium, a border; lit in the labels' dark teal here, in place of Machine's emerald)
+const DEFAULT_BUTTON = 'h-6 px-2.5 rounded text-[11px] uppercase tracking-wider font-medium border transition-colors cursor-pointer';
+// the mark on the default's card in the strip (Machine's production bookmark)
+const DEFAULT_MARK = 'Default';
 // Providers have no metric to grade by, so strength marks the selection: the chosen card at full strength,
 // the others low (a top edge and a 2% scale alone are not enough to read which one is chosen).
 const SELECTED_TILE_STRENGTH = 1;
@@ -80,7 +85,7 @@ function validate(draft: Draft, provider: ProviderInfo | undefined, current: Das
   if (provider?.requires_url && !url) errors.apiUrl = 'the endpoint’s URL is needed';
   else if (url && !HTTP_URL.test(url)) errors.apiUrl = 'the URL starts with http:// or https://';
   if (provider && provider.models.length === 0 && !draft.model.trim()) errors.model = 'the model’s name is needed';
-  if (provider?.requires_key && !current.api_key_set && !draft.apiKey) errors.apiKey = 'an API key is needed';
+  if (provider?.requires_key && !cardSettings(current, draft.provider).api_key_set && !draft.apiKey) errors.apiKey = 'an API key is needed';
   return errors;
 }
 
@@ -91,6 +96,16 @@ function refusal(errors: Errors): string {
 
 function endpointName(endpoints: CustomEndpoint[] | undefined, url: string): string {
   return endpoints?.find((e) => e.url === url)?.name ?? '';
+}
+
+// A card's own settings (2026-11-06: every provider configured keeps its own, one of them the default); the
+// default's are the top level's too, a provider never configured has none.
+const NO_SETTINGS: ProviderSettings = { model: '', api_url: '', api_key_set: false, api_key_hint: '' };
+
+function cardSettings(config: DashboardConfig, id: string): ProviderSettings {
+  if (config.providers?.[id]) return config.providers[id];
+  if (id === config.provider) return { model: config.model, api_url: config.api_url ?? '', api_key_set: config.api_key_set, api_key_hint: config.api_key_hint };
+  return NO_SETTINGS;
 }
 
 function draftFrom(config: DashboardConfig): Draft {
@@ -108,14 +123,19 @@ function draftFrom(config: DashboardConfig): Draft {
   };
 }
 
-function patchFrom(draft: Draft, config: DashboardConfig): ConfigPatch {
+function patchFrom(draft: Draft, config: DashboardConfig, offeredModel: string): ConfigPatch {
   const patch: ConfigPatch = {};
-  if (draft.provider !== config.provider) patch.provider = draft.provider;
-  if (draft.model !== config.model) patch.model = draft.model;
-  if (draft.apiKey) patch.api_key = draft.apiKey;
-  if (draft.apiUrl.trim() !== (config.api_url ?? '')) patch.api_url = draft.apiUrl.trim();
+  // the card's fields against the card's own entry (2026-11-06): a change names the card, and the server keeps
+  // it in that provider's entry; picking another card is no change by itself (a card never configured opens
+  // on the provider's own model, `offeredModel`, which counts as no change), and Save never moves the default
+  const saved = cardSettings(config, draft.provider);
+  const card: ConfigPatch = {};
+  if (draft.model !== (saved.model || offeredModel)) card.model = draft.model;
+  if (draft.apiKey) card.api_key = draft.apiKey;
+  if (draft.apiUrl.trim() !== saved.api_url) card.api_url = draft.apiUrl.trim();
   const name = draft.endpointName.trim();
-  if (draft.provider === CUSTOM_PROVIDER && name && name !== endpointName(config.endpoints, draft.apiUrl.trim())) patch.endpoint_name = name;
+  if (draft.provider === CUSTOM_PROVIDER && name && name !== endpointName(config.endpoints, draft.apiUrl.trim())) card.endpoint_name = name;
+  if (Object.keys(card).length > 0) Object.assign(patch, { provider: draft.provider }, card);
   if (draft.batchesExtract !== Boolean(config.batches?.extract)) patch.batches = { extract: draft.batchesExtract };
   if (draft.includeHeadless !== Boolean(config.include_headless_sessions)) {
     patch.include_headless_sessions = draft.includeHeadless;
@@ -135,6 +155,7 @@ export function SettingsPage() {
   const [showGlobal, setShowGlobal] = useState(true);   // the Global card picked in the strip (the page opens on it; else a provider's or an endpoint's)
   const [checked, setChecked] = useState(false);        // a Save was refused: the fields stay marked until they pass
   const [confirmRemove, setConfirmRemove] = useState<CustomEndpoint | null>(null);   // Machine's delete dialog, for a saved endpoint
+  const [confirmDefault, setConfirmDefault] = useState(false);   // Machine's production dialog, for the card to become the default
 
   useEffect(() => {
     if (config.data) setDraft(draftFrom(config.data));
@@ -159,7 +180,7 @@ export function SettingsPage() {
     ? provider.models
     : [{ id: draft.model, label: draft.model }, ...(provider?.models ?? [])];
   const batchProviders = providerList.filter((p) => p.batches).map((p) => p.name).join(', ');
-  const patch = patchFrom(draft, current);
+  const patch = patchFrom(draft, current, provider?.default_model ?? '');
   const dirty = Object.keys(patch).length > 0;
   const keywordBad = draft.keyword.trim() !== '' && !keywordIsPlain(draft.keyword.trim());
   const errors = checked ? validate(draft, provider, current, patch) : {};
@@ -188,6 +209,19 @@ export function SettingsPage() {
   const pickedEndpoint = draft.provider === CUSTOM_PROVIDER ? endpoints.find((e) => e.url === draft.apiUrl.trim()) : undefined;
   const selectedTile = showGlobal ? GLOBAL_TILE : pickedEndpoint ? `${ENDPOINT_TILE}${pickedEndpoint.url}` : draft.provider;
   const cardTitle = showGlobal ? 'Global' : pickedEndpoint ? pickedEndpoint.name : provider?.name ?? draft.provider;
+  const cardKey = cardSettings(current, draft.provider);
+  // the default: the provider every call without a choice runs on; for the custom provider, its endpoint in use
+  const isDefault = !showGlobal && (pickedEndpoint ? Boolean(pickedEndpoint.default) : draft.provider === current.provider && draft.provider !== CUSTOM_PROVIDER);
+  // Machine's Production button, confirmed like its production strategy: the card's fields are saved with it
+  const makeDefault = () => {
+    setConfirmDefault(false);
+    const found = validate(draft, provider, current, { ...patch, provider: draft.provider });
+    if (Object.keys(found).length > 0) { setChecked(true); notify('warning', refusal(found)); return; }
+    save.mutate({ ...patch, provider: draft.provider, set_default: true }, {
+      onSuccess: () => { setChecked(false); notify('done', `${cardTitle} is the default`); },
+      onError: (error) => notify('error', `Not set: ${error.message}`),
+    });
+  };
 
   return (
     <section className="flex flex-col">
@@ -219,12 +253,14 @@ export function SettingsPage() {
             setShowGlobal(false);
             if (id.startsWith(ENDPOINT_TILE)) {
               const entry = endpoints.find((e) => e.url === id.slice(ENDPOINT_TILE.length));
-              if (entry) update({ provider: CUSTOM_PROVIDER, apiUrl: entry.url, model: entry.model, endpointName: entry.name });
+              if (entry) update({ provider: CUSTOM_PROVIDER, apiUrl: entry.url, model: entry.model, endpointName: entry.name, apiKey: '' });
               return;
             }
             // the custom card itself is a new endpoint: a clean form
-            if (id === CUSTOM_PROVIDER) { update({ provider: id, apiUrl: '', model: '', endpointName: '' }); return; }
-            update({ provider: id, model: providerList.find((p) => p.id === id)?.default_model || draft.model });
+            if (id === CUSTOM_PROVIDER) { update({ provider: id, apiUrl: '', model: '', endpointName: '', apiKey: '' }); return; }
+            // the card's own settings (2026-11-06), the provider's default model for one never configured
+            const own = cardSettings(current, id);
+            update({ provider: id, model: own.model || providerList.find((p) => p.id === id)?.default_model || '', apiUrl: own.api_url, endpointName: '', apiKey: '' });
           }}
           tiles={[
             { id: GLOBAL_TILE, name: 'every project', value: 'Global', sub: 'tuning · rule keyword',
@@ -237,6 +273,7 @@ export function SettingsPage() {
               value: p.name,
               sub: p.id,
               strength: selectedTile === p.id ? SELECTED_TILE_STRENGTH : UNSELECTED_TILE_STRENGTH,
+              marked: p.id === current.provider ? DEFAULT_MARK : undefined,
             })),
             ...endpoints.map((e) => ({
               id: `${ENDPOINT_TILE}${e.url}`,
@@ -245,6 +282,7 @@ export function SettingsPage() {
               sub: e.model || e.url,
               title: `${e.name} · ${e.url}`,
               strength: selectedTile === `${ENDPOINT_TILE}${e.url}` ? SELECTED_TILE_STRENGTH : UNSELECTED_TILE_STRENGTH,
+              marked: e.default ? DEFAULT_MARK : undefined,
             })),
             ...providerList.filter((p) => p.id === CUSTOM_PROVIDER).map((p) => ({
               id: p.id,
@@ -304,18 +342,28 @@ export function SettingsPage() {
               </SettingRow>
             )}
             {(provider?.requires_key || provider?.requires_url) && (
-              <SettingRow id="api-key-label" label="API key" note={provider?.requires_key ? (current.api_key_set ? `set, ends in ${current.api_key_hint}` : 'not set') : 'only if the endpoint wants one'} error={errors.apiKey}>
+              <SettingRow id="api-key-label" label="API key" note={provider?.requires_key ? (cardKey.api_key_set ? `set, ends in ${cardKey.api_key_hint}` : 'not set') : 'only if the endpoint wants one'} error={errors.apiKey}>
                 <SettingInput id="api-key" aria-labelledby="api-key-label" type="password" autoComplete="off" aria-invalid={Boolean(errors.apiKey) || undefined}
-                  placeholder={current.api_key_set ? `set, ends in ${current.api_key_hint}` : 'not set'}
+                  placeholder={cardKey.api_key_set ? `set, ends in ${cardKey.api_key_hint}` : 'not set'}
                   value={draft.apiKey} onChange={(e) => update({ apiKey: e.target.value })} />
               </SettingRow>
             )}
           </SettingsSection>
         )}
-        {/* a saved endpoint's Delete under its container (operator 2026-11-06), the button alone at the right */}
-        {!showGlobal && pickedEndpoint && (
-          <div className="flex justify-end px-4 py-3">
-            <Button className={deleteButtonClasses} disabled={save.isPending} onClick={() => setConfirmRemove(pickedEndpoint)}>Delete endpoint</Button>
+        {/* under a card (operator 2026-11-06): Machine's Production button as the Default at the left (lit for the
+            default, disabled there: the default stays until another is made so), a saved endpoint's Delete at the right */}
+        {!showGlobal && (
+          <div className="flex items-center justify-between gap-3 px-4 py-3">
+            <button type="button" aria-pressed={isDefault} disabled={isDefault || save.isPending || (draft.provider === CUSTOM_PROVIDER && !pickedEndpoint)}
+              title={isDefault ? 'the default: every call without a choice runs on it' : 'make this the default'}
+              style={isDefault ? tileLabelStyle : undefined}
+              className={cn(DEFAULT_BUTTON, isDefault ? 'border-transparent text-teal-100 disabled:opacity-100 disabled:cursor-default' : 'border-line text-fg-subtle hover:bg-control-hover disabled:opacity-50')}
+              onClick={() => setConfirmDefault(true)}>
+              Default
+            </button>
+            {pickedEndpoint && (
+              <Button className={deleteButtonClasses} disabled={save.isPending} onClick={() => setConfirmRemove(pickedEndpoint)}>Delete endpoint</Button>
+            )}
           </div>
         )}
       </div>
@@ -333,6 +381,21 @@ export function SettingsPage() {
             {/* the page's own pair: Cancel as Discard is, Delete in the labels' rose */}
             <Button variant="secondary" className={buttonClasses} onClick={() => setConfirmRemove(null)}>Cancel</Button>
             <Button className={deleteButtonClasses} onClick={() => { if (confirmRemove) remove(confirmRemove); }}>Delete</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+      {/* Machine's production confirmation, for the default */}
+      <Dialog open={confirmDefault} onOpenChange={(open) => { if (!open) setConfirmDefault(false); }}>
+        <DialogContent onInteractOutside={(e) => e.preventDefault()}>
+          <DialogHeader>
+            <DialogTitle>Set the default</DialogTitle>
+            <DialogDescription>
+              Make <span className="font-medium text-fg-muted">{cardTitle}</span> the default? Every call without a choice runs on it: the pipeline, the benchmark’s runner and judge, the CLI.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="secondary" className={buttonClasses} onClick={() => setConfirmDefault(false)}>Cancel</Button>
+            <Button className={buttonClasses} onClick={makeDefault}>Set default</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

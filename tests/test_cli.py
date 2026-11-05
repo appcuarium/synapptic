@@ -47,6 +47,45 @@ class TestConfigShow:
         assert "ollama" in result.output.lower()
 
 
+class TestConfigProvider:
+    """`synapptic config provider` on the per-provider entries (operator 2026-11-06): the default preselected
+    and marked, a provider configured beside it asked "Set default?", its settings kept in its own entry.
+    The connection check at the end goes to a closed local port, so it fails at once and the command ends."""
+
+    UNREACHABLE = "http://127.0.0.1:9/v1"   # boundary: the provider's server; a closed port fails the check at once
+
+    def test_a_second_provider_is_kept_beside_the_default_unless_made_so(self, runner, tmp_path, monkeypatch):
+        config_path = tmp_path / "config.yaml"
+        monkeypatch.setattr("synapptic.providers.CONFIG_PATH", config_path)
+        from synapptic.providers import load_config, save_config
+        save_config({"provider": "anthropic", "model": "claude-sonnet-5-5", "api_key": "sk-ant-key"})
+        # Ollama is 4; its first model; the URL; "Set default?" answered no
+        result = runner.invoke(cli, ["config", "provider"], input=f"4\n1\n{self.UNREACHABLE}\nn\n")
+        assert result.exit_code == 0, result.output
+        assert "Anthropic API (default)" in result.output and "Set default?" in result.output
+        saved = load_config()
+        assert saved["provider"] == "anthropic" and saved["model"] == "claude-sonnet-5-5" and saved["api_key"] == "sk-ant-key"
+        assert saved["providers"]["ollama"]["api_url"] == self.UNREACHABLE and saved["providers"]["ollama"]["model"]
+        # run again: Ollama shows as configured, and this time it is made the default
+        result = runner.invoke(cli, ["config", "provider"], input=f"4\n1\n{self.UNREACHABLE}\ny\n")
+        assert result.exit_code == 0, result.output
+        assert "Ollama (local) (configured)" in result.output
+        saved = load_config()
+        assert saved["provider"] == "ollama" and saved["api_url"] == self.UNREACHABLE and "api_key" not in saved
+        assert saved["providers"]["anthropic"] == {"model": "claude-sonnet-5-5", "api_key": "sk-ant-key"}
+
+    def test_the_default_is_not_asked_about_itself(self, runner, tmp_path, monkeypatch):
+        config_path = tmp_path / "config.yaml"
+        monkeypatch.setattr("synapptic.providers.CONFIG_PATH", config_path)
+        from synapptic.providers import load_config, save_config
+        save_config({"provider": "ollama", "model": "llama3", "api_url": self.UNREACHABLE})
+        # the default preselected: Enter takes it; its model; its URL kept
+        result = runner.invoke(cli, ["config", "provider"], input="\n1\n\n")
+        assert result.exit_code == 0, result.output
+        assert "Set default?" not in result.output and "Ollama (local) (default)" in result.output
+        assert load_config()["provider"] == "ollama"
+
+
 class TestStats:
 
     def test_stats_no_data(self, runner, tmp_path, monkeypatch):

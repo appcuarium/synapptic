@@ -16,6 +16,10 @@ export const tileLabelStyle = { backgroundColor: LABEL_BACKGROUND };
 // colour as the border and as the text, no fill; operator 2026-11-05) for a rule with no benchmark.
 export type TileLabelTone = 'amber' | 'rose' | 'outline';
 export const TONE_CLASSES: Record<TileLabelTone, string> = { amber: 'bg-amber-800 text-amber-100', rose: 'bg-rose-800 text-rose-100', outline: 'border bg-transparent' };
+// The chip itself (operator 2026-11-06): redundant is the verdict's amber-500 with the hue's darkest text; backfire
+// and ineffective rose-900 with rose-400 text (the teal label's recipe in rose was "too dark"); the Delete
+// button and the notices keep the dark pair above.
+const CHIP_TONE_CLASSES: Record<TileLabelTone, string> = { amber: 'bg-amber-500 text-amber-950', rose: 'bg-rose-900 text-rose-100', outline: 'border bg-transparent' };
 const OUTLINE_STYLE: CSSProperties = { borderColor: LABEL_BACKGROUND, color: LABEL_BACKGROUND };
 
 // The chip's height and text size are the benchmark runs toggles' (h-8, 13px; operator 2026-11-05); tooltips
@@ -26,7 +30,7 @@ export function TileLabel({ id, className, tone, children }: { id?: string; clas
     // the name is text: the text cursor over it and selectable (shadcn's Label is select-none by default, and
     // Radix's label cancels a double click's default so a word is never selected: the span keeps that mousedown
     // from reaching it, so a double click selects the name and it can be copied)
-    <Label id={id} className={cn('inline-flex h-8 min-w-0 px-2 rounded-sm truncate cursor-text select-text', tileLabelClasses, 'text-[13px]', tone && TONE_CLASSES[tone], className)}
+    <Label id={id} className={cn('inline-flex h-8 min-w-0 px-2 rounded-sm truncate cursor-text select-text', tileLabelClasses, 'text-[13px]', tone && CHIP_TONE_CLASSES[tone], className)}
       style={tone === undefined ? tileLabelStyle : tone === 'outline' ? OUTLINE_STYLE : undefined}>
       <span className="truncate" onMouseDown={(event) => event.stopPropagation()}>{children}</span>
     </Label>

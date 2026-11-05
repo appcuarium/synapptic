@@ -21,7 +21,7 @@ from datetime import datetime, timezone
 
 from synapptic.config import BENCHMARKS_DIR
 from synapptic.core import require_core
-from synapptic.providers import PROVIDERS, call_llm, estimate_tokens, get_claude_session_id, get_tpm_headroom, headless_reply, is_daily_limit_hit, load_config, _resolve_limits
+from synapptic.providers import PROVIDERS, call_llm, estimate_tokens, get_claude_session_id, get_tpm_headroom, headless_reply, is_daily_limit_hit, load_config, provider_config, provider_entry, _resolve_limits
 from synapptic.state import load_archetype, load_profile, save_profile
 
 CACHE_FORMAT_VERSION = 4
@@ -1248,10 +1248,11 @@ class BenchmarkStopped(Exception):
 
 
 def respondent_model(config: dict, provider: str = RULE_RESPONDENT_PROVIDER) -> str:
-    """The runner's model: the configured one when the configured provider is the runner's, else the
-    provider's default (Claude Code's: sonnet)."""
-    if config.get("provider") == provider and config.get("model"):
-        return config["model"]
+    """The runner's model: the one saved for the runner's provider (the default's when it is the default),
+    else the provider's default (Claude Code's: sonnet)."""
+    saved = provider_entry(config, provider).get("model")
+    if saved:
+        return saved
     if provider == RULE_RESPONDENT_PROVIDER:
         return RULE_RESPONDENT_DEFAULT_MODEL
     return PROVIDERS.get(provider, {}).get("default_model", "")
@@ -1267,7 +1268,8 @@ def runner_for(provider: str, config: dict, temperature: float | None):
     with the user's hooks for the hooked runner, one provider call for any other."""
     if provider == RULE_RESPONDENT_PROVIDER:
         return functools.partial(headless_reply, tools=RULE_RESPONDENT_TOOLS)
-    return functools.partial(api_reply, config={**config, "provider": provider}, temperature=temperature)
+    # the chosen provider's own settings (its key, its URL), not the default's (2026-11-06)
+    return functools.partial(api_reply, config=provider_config(config, provider), temperature=temperature)
 
 
 def generate_rule_scenario(rule_id: str, config: dict) -> dict | None:
@@ -1390,6 +1392,13 @@ def judge_controls(judge_config: dict, respond, model: str, cwd: str | None, pro
     return found
 
 
+def classify_verdict(with_passes: int, with_valid: int, without_passes: int, without_valid: int) -> str:
+    """A rule's verdict from its arms' counts (operator 2026-11-06): redundant only when both arms passed every
+    run; effective when the rule on passed more often than off, backfire when less, ineffective when the same;
+    untestable with no valid run, unclear with none on one arm."""
+    return require_core().classify_counts(with_passes, with_valid, without_passes, without_valid)
+
+
 def run_rule_benchmark(rule_id: str, config: dict | None = None, judge_config: dict | None = None,
                        runs: int = RULE_BENCHMARK_RUNS, temperature: float | None = 0.1, cwd: str | None = None,
                        progress=None, respond=None, scenario: dict | None = None, model: str | None = None,
@@ -1442,7 +1451,7 @@ def run_rule_benchmark(rule_id: str, config: dict | None = None, judge_config: d
     for name in arms:
         arms[name]["score"] = core.majority_vote(arms[name]["passes"], arms[name]["valid"])
         arms[name]["ci_95"] = list(core.binomial_ci(arms[name]["passes"], arms[name]["valid"], 1.96))
-    classification = core.classify(arms["with"]["score"], arms["without"]["score"], arms["with"]["valid"], arms["without"]["valid"])
+    classification = classify_verdict(arms["with"]["passes"], arms["with"]["valid"], arms["without"]["passes"], arms["without"]["valid"])
     if arms["with"]["fired"] == 0:
         # the scenario never brought the rule up: the on arm measured nothing
         classification = "untestable"
@@ -1543,10 +1552,57 @@ def save_scope_benchmark(run: dict) -> str:
     return require_core().harness_benchmark_run_save(json.dumps(run))
 
 
+def scope_summary(run: dict) -> dict:
+    """The previous CLI's closing summary for a run over a scope (operator 2026-11-06): how many rules were
+    testable of the run's, the pass rate with the rule on and off with their 95% intervals, the net impact
+    with the rules improved and regressed, the judge's failures over its calls, the two controls. Each rule's
+    verdict is read as the CLI's test was (its arms' passes and valid runs, its classification)."""
+    verdicts = [v for v in run.get("verdicts", []) if isinstance(v, dict)]
+    tests = [{
+        "rule": v.get("rule", ""), "classification": v.get("classification", ""),
+        "with_guard": {"pass_count": v.get("with", {}).get("passes", 0), "valid_runs": v.get("with", {}).get("valid", 0), "score": v.get("with", {}).get("score", "")},
+        "without_guard": {"pass_count": v.get("without", {}).get("passes", 0), "valid_runs": v.get("without", {}).get("valid", 0), "score": v.get("without", {}).get("score", "")},
+    } for v in verdicts]
+    judge_failures = sum(int(v.get("judge_failures", 0) or 0) for v in verdicts)
+    judge_calls = sum(int(v.get("with", {}).get("valid", 0) or 0) + int(v.get("without", {}).get("valid", 0) or 0) for v in verdicts)
+    controls = run.get("controls") if isinstance(run.get("controls"), dict) else None
+    comply = bool(controls["comply"]) if controls and "comply" in controls else None
+    violate = bool(controls["violate"]) if controls and "violate" in controls else None
+    core = require_core()
+    summary = json.loads(core.summarize(json.dumps(tests), judge_failures, judge_calls, comply, violate))
+    # the rates count hits, every passed run over every judged run across the rules, not a per-rule majority
+    # (operator 2026-11-06: "it should count the hits as impact, not the majority"); the interval over the hits
+    for arm, rate, interval in (("with", "with_pass_rate", "with_ci_95"), ("without", "without_pass_rate", "without_ci_95")):
+        passes = sum(int(v.get(arm, {}).get("passes", 0) or 0) for v in verdicts)
+        valid = sum(int(v.get(arm, {}).get("valid", 0) or 0) for v in verdicts)
+        summary[rate] = passes / valid if valid else 0.0
+        summary[interval] = list(core.binomial_ci(passes, valid, 1.96)) if valid else [0.0, 0.0]
+    summary["delta"] = summary["with_pass_rate"] - summary["without_pass_rate"]
+    return summary
+
+
+def reclassified(verdict: dict) -> dict:
+    """The verdict read with the current rule (operator 2026-11-06: a stored 3/3 against 2/3 still said
+    redundant): its word from its arms' counts, whatever it was called when it ran; a stopped verdict and one
+    without counts keep theirs."""
+    if not isinstance(verdict, dict) or verdict.get("classification") == STOPPED:
+        return verdict
+    with_arm, without_arm = verdict.get("with"), verdict.get("without")
+    if not isinstance(with_arm, dict) or not isinstance(without_arm, dict):
+        return verdict
+    return {**verdict, "classification": classify_verdict(int(with_arm.get("passes", 0) or 0), int(with_arm.get("valid", 0) or 0),
+                                                           int(without_arm.get("passes", 0) or 0), int(without_arm.get("valid", 0) or 0))}
+
+
 def list_scope_benchmarks() -> list[dict]:
-    """Every kept run, newest first, each with its id; the old files imported first when any are left."""
+    """Every kept run, newest first, each with its id; the old files imported first when any are left. Every
+    verdict is read with the current rule and the summary recomputed over them."""
     import_benchmark_files()
-    return list(require_core().harness_benchmark_runs(None))
+    runs = list(require_core().harness_benchmark_runs(None))
+    for run in runs:
+        run["verdicts"] = [reclassified(v) for v in run.get("verdicts", [])]
+        run["summary"] = scope_summary(run)
+    return runs
 
 
 def flush_scope_benchmarks() -> int:
