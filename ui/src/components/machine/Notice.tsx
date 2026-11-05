@@ -11,8 +11,8 @@ import { cn } from '@/lib/cn';
 export type NoticeKind = 'done' | 'warning' | 'error';
 
 const NOTICE_MS = 5000;
-// above the status bar (24px) with the page's gutter
-const NOTICE_OFFSET = { bottom: 32, right: 16 };
+// above the status bar (32px) with the page's gutter
+const NOTICE_OFFSET = { bottom: 40, right: 16 };
 const TONE: Record<NoticeKind, string> = { done: 'text-teal-100', warning: TONE_CLASSES.amber, error: TONE_CLASSES.rose };
 
 export function notify(kind: NoticeKind, message: string) {

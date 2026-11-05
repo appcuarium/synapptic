@@ -146,8 +146,8 @@ export function SessionsPage() {
   }, [live.dataUpdatedAt]);
 
   return (
-    // the viewport less the top bar (3rem) and the status bar under every page (1.5rem)
-    <section className="h-[calc(100dvh-4.5rem)] flex flex-col">
+    // the viewport less the top bar (3rem) and the status bar under every page (2rem)
+    <section className="h-[calc(100dvh-5rem)] flex flex-col">
       <PageHeader title="Sessions">
         <span className="text-sm text-fg-subtle truncate">{project ?? 'All projects'}</span>
         <label htmlFor="session-search" className="sr-only">Search sessions</label>

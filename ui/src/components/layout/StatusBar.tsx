@@ -70,16 +70,18 @@ function useFrameRate(): number {
 function FrameRate() {
   const fps = useFrameRate();
   const tone = fps >= FPS_FINE ? 'text-primary' : fps >= FPS_SLOW ? 'text-amber-600 dark:text-amber-400' : 'text-rose-600 dark:text-rose-400';
-  return <span className={cn('flex items-center font-bold', tone)}>{fps} fps</span>;
+  // a fixed box with tabular digits (operator 2026-11-06): the number changing never moves what sits beside it
+  return <span className={cn('flex items-center justify-end min-w-[7ch] tabular-nums font-bold', tone)}>{fps} FPS</span>;
 }
 
 export function StatusBar() {
   const [dot, label] = CONNECTION[useConnectionState()];
   const { notes } = useContext(StatusNotesContext);
   return (
-    <div className="shrink-0 flex items-center bg-page h-6 border-t border-line sticky bottom-0 mt-auto">
+    // Machine's bar: 32px tall, 12px text (operator 2026-11-06: "taller and the text a bit bigger")
+    <div className="shrink-0 flex items-center bg-page h-8 border-t border-line sticky bottom-0 mt-auto">
       {/* one line at every width: on phones the source and the page's details drop out */}
-      <div className="py-1 px-2 text-left h-6 text-[10px] flex items-center justify-between flex-1 whitespace-nowrap">
+      <div className="py-1 px-3 text-left h-8 text-xs flex items-center justify-between flex-1 whitespace-nowrap">
         <div className="flex items-center">
           <span className="flex items-center"><span className={cn('mr-1 w-1.5 h-1.5 rounded-full inline-block', dot)} /><span className="text-fg-muted">{label}</span></span>
           {notes?.source && <span className="hidden sm:flex items-center mx-2 text-fg-subtle">{notes.source}</span>}
