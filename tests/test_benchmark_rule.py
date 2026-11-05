@@ -12,7 +12,7 @@ import pytest
 import synapptic_core
 
 from synapptic import benchmark
-from synapptic.harness import add_rule
+from synapptic.harness import add_rule, switch_rule
 
 RULE = "pytest-parallel"
 TEXT = "pytest in this workspace always runs with -n 4."
@@ -107,6 +107,19 @@ def test_a_scenario_that_never_brings_the_rule_up_is_untestable(own_store, monke
     assert verdict["fired"] == 0 and verdict["classification"] == "untestable"
 
 
+def test_a_rule_that_was_off_is_off_again_after_its_benchmark(own_store, monkeypatch):
+    """The arms switch the rule as they need and put its own switch back (operator 2026-11-05, the Benchmark
+    page runs every rule in scope): a rule the user had switched off is off again when the run ends."""
+    monkeypatch.setattr(benchmark, "call_llm", model_calls)   # boundary: llm - the generation and judge models
+    switch_rule(RULE, True)
+
+    verdict = benchmark.run_rule_benchmark(RULE, config=CONFIG, respond=headless_session(itertools.count()), scenario=SCENARIO, was_off=True)
+
+    assert verdict["fired"] == 3   # the on arm had it on
+    exported = json.loads(synapptic_core.harness_export())
+    assert next(r for r in exported["rules"] if r["rule"] == RULE)["switched off"] is True
+
+
 def never_switch(rule_id, off):
     raise AssertionError("a runner without hooks never switches the rule in the store")
 
@@ -136,3 +149,67 @@ def test_a_runner_without_hooks_gets_the_rule_ahead_of_the_scenario(own_store, m
     prompts = sorted(prompt for prompt, _ in calls)
     assert prompts[:3] == [SCENARIO["scenario"]] * 3                      # the off arm: the scenario alone
     assert all(p.startswith(TEXT) and p.endswith(SCENARIO["scenario"]) for p in prompts[3:])   # the on arm: the rule, then the scenario
+
+
+# ----- a run over the rules: the previous CLI's full benchmark (operator 2026-11-05) -------------------------
+
+def generation_calls(calls, prompt, config=None, temperature=None, session_id=None):
+    """The generation model: one scenario per asked rule, counted."""
+    calls.append(prompt)
+    return json.dumps([{**SCENARIO, "scenario": f"scenario {len(calls)}"}])
+
+
+def test_the_scenarios_of_a_seed_are_generated_once_and_shared_by_every_rerun(own_store, monkeypatch):
+    """The CLI's cached test cases: one scenario per rule, generated once per scope, seed, generation model and
+    rule set, kept under the benchmarks directory and reused by every rerun with that seed (so the arms and the
+    reruns face the same cases); refresh generates them again; another seed is another set."""
+    calls = []
+    monkeypatch.setattr(benchmark, "call_llm", functools.partial(generation_calls, calls))   # boundary: llm - the generation model
+    add_rule("commit-only-on-order", ["commit"], "Commit only when told.", "")
+    rules = [{"id": RULE}, {"id": "commit-only-on-order"}]
+    notes = []
+
+    first = benchmark.rule_scenarios(rules, "", 7, CONFIG, progress=notes.append)
+    asked_first = len(calls)
+    again = benchmark.rule_scenarios(rules, "", 7, CONFIG, progress=notes.append)
+    asked_again = len(calls)
+    fresh = benchmark.rule_scenarios(rules, "", 7, CONFIG, refresh=True)
+    asked_fresh = len(calls)
+    other = benchmark.rule_scenarios(rules, "", 8, CONFIG)
+
+    assert list(first) == [RULE, "commit-only-on-order"] and first[RULE]["scenario"] == "scenario 1" and asked_first == 2
+    assert again == first and asked_again == 2                       # the rerun read the kept scenarios, asked nothing
+    assert "reusing 2 cached scenario(s) for seed 7" in [n["message"] for n in notes]
+    assert fresh[RULE]["scenario"] == "scenario 3" and asked_fresh == 4
+    assert other[RULE]["scenario"] == "scenario 5" and len(calls) == 6
+    kept = sorted(p.name for p in (own_store / "benchmarks" / "scenarios").glob("*.json"))
+    assert len(kept) == 2 and all(name.startswith("global_seed") for name in kept)
+
+
+def test_a_seed_picks_the_same_rules_in_the_same_order():
+    rules = [{"id": name} for name in ("a", "b", "c", "d", "e")]
+    picked = [rule["id"] for rule in benchmark.select_rules(rules, 3, 42)]
+    assert picked == [rule["id"] for rule in benchmark.select_rules(rules, 3, 42)] and len(set(picked)) == 3
+    assert picked != [rule["id"] for rule in benchmark.select_rules(rules, 3, 43)] or picked != ["a", "b", "c"]
+    assert [rule["id"] for rule in benchmark.select_rules(rules, 9, 42)] == [rule["id"] for rule in benchmark.select_rules(rules, 5, 42)]
+
+
+def control_judge(biased, prompt, config=None, temperature=None, session_id=None):
+    """The judge on the control cases: right (COMPLY for the language rule, VIOLATE for the no-code rule), or
+    biased toward COMPLY whatever the response."""
+    if biased or "same language" in prompt:
+        return json.dumps({"verdict": "COMPLY", "reason": "fine"})
+    return json.dumps({"verdict": "VIOLATE", "reason": "there is code"})
+
+
+def runner_answers(prompt, model, cwd):
+    return "Sure, here is how: `sorted(items)`.", None
+
+
+@pytest.mark.parametrize("biased, expected", [(False, {"comply": True, "violate": True}), (True, {"comply": True, "violate": False})])
+def test_the_control_cases_read_the_judge_once_per_run(own_store, monkeypatch, biased, expected):
+    """The CLI's judge calibration: the runner answers the two control scenarios, the judge reads each against
+    the control's own rule; a judge biased toward COMPLY is caught by the violate control."""
+    monkeypatch.setattr(benchmark, "call_llm", functools.partial(control_judge, biased))   # boundary: llm - the judge
+    found = benchmark.judge_controls(CONFIG, runner_answers, "sonnet", None)
+    assert {"comply": found["comply"], "violate": found["violate"]} == expected and set(found["reasons"]) == {"comply", "violate"}

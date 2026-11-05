@@ -88,7 +88,8 @@ def config_show():
         try:
             store = require_core().harness_store_info()
             click.echo(f"Harness:         {store['rules']} rule(s), {store['events']} event(s), key in {store['key_source']}, {store['path']}")
-        except (CoreMissing, ValueError) as exc:
+            click.echo(f"Rule keyword:    {harness.keyword()}")
+        except (CoreMissing, ValueError, harness.HarnessError) as exc:
             click.echo(f"Harness:         store unavailable ({exc})")
     click.echo(f"Provider:        {provider_name} ({provider})")
     click.echo(f"Model:           {model}")
@@ -263,6 +264,17 @@ def config_tuning(level):
     except harness.HarnessError as exc:
         raise guard_failure(exc)
     click.echo(f"Tuning: {level}" + (" (the words stay as they are until switched back on)" if level == "off" else ""))
+
+
+@config_group.command("keyword")
+@click.argument("word", required=False)
+def config_keyword(word):
+    """The word that turns a prompt into a rule: a prompt that starts with it (RULE: unless changed) writes a
+    rule for the project at once, from the sentence that follows. One word, no spaces."""
+    try:
+        click.echo(f"Rule keyword: {harness.keyword() if word is None else harness.set_keyword(word)}")
+    except (CoreMissing, harness.HarnessError) as exc:
+        raise guard_failure(exc)
 
 
 @config_group.command("mode")

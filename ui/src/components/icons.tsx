@@ -38,6 +38,10 @@ export const SessionsIcon = (p: IconProps) => (
 export const ProfileIcon = (p: IconProps) => (
   <Svg {...p}><path d="M12 3l7 3v5c0 5-3 8-7 10-4-2-7-5-7-10V6z" /></Svg>
 );
+// A gauge: the benchmark's dial.
+export const BenchmarkIcon = (p: IconProps) => (
+  <Svg {...p}><path d="M4 17a8 8 0 1116 0" /><path d="M12 17l4-6" /><circle cx="12" cy="17" r="1.5" /></Svg>
+);
 export const SettingsIcon = (p: IconProps) => (
   <Svg {...p}>
     <circle cx="12" cy="12" r="3" />

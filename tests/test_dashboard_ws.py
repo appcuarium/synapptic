@@ -1,5 +1,6 @@
 """The dashboard websocket at /api/ws: protocol, config methods, pushes, origin check, and the SPA routes."""
 
+import functools
 import json
 import sys
 import time
@@ -86,6 +87,18 @@ def test_the_tuning_dial_is_read_and_written_through_config(client, config_path)
         assert request(ws, "r7", "config.update", {"tuning": "wild"})["code"] == "invalid_params"
     saved = yaml.safe_load(config_path.read_text())
     assert saved["harness"] == {"tuning": "eager"} and saved["api_key"] == SECRET
+
+
+def test_the_rule_keyword_is_read_and_written_with_the_rules_not_the_file(client, config_path, tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))   # boundary: the rules' store lives under a scratch HOME, never the user's
+    with client.websocket_connect("/api/ws") as ws:
+        ws.receive_json()
+        assert request(ws, "k1", "config.get")["result"]["keyword"] == "RULE:"
+        assert request(ws, "k2", "config.update", {"keyword": "GUARD->"})["result"]["keyword"] == "GUARD->"
+        assert request(ws, "k3", "config.update", {"keyword": "two words"})["code"] == "invalid_params"
+        assert request(ws, "k3b", "config.update", {"keyword": "GUARD!"})["code"] == "invalid_params"   # no special characters
+        assert request(ws, "k4", "config.get")["result"]["keyword"] == "GUARD->"
+    assert "keyword" not in yaml.safe_load(config_path.read_text())
 
 
 def test_the_guards_methods_say_when_the_core_is_missing(client, monkeypatch):
@@ -226,6 +239,103 @@ def test_the_runner_provider_chosen_on_the_page_reaches_the_run(client, monkeypa
         while frames[-1]["topic"] != "guards":
             frames.append(ws.receive_json())
     assert frames[0]["data"]["done"] is True and frames[0]["data"]["verdict"]["runner"] == ["ollama", "gemma3:27b"]
+
+
+def scope_stand_in(calls, rule_id, progress=None, provider=None, model=None, was_off=False, runs=3, scenario=None, temperature=None, **_):
+    # boundary: llm and headless sessions - the one-rule benchmark (tests/test_benchmark_rule.py drives the real
+    # one); records how the scope job called it and reports one step per rule
+    calls.append((rule_id, provider, model, was_off, runs, scenario["scenario"] if scenario else None, temperature))
+    progress({"kind": "note", "message": "answering the scenario"})
+    return {"rule": rule_id, "classification": "effective" if not was_off else "redundant", "runs": runs, "fired": 1}
+
+
+def scope_model(prompt, config=None, temperature=None, session_id=None):
+    """The generation model (one scenario per asked rule, named after the rule's phrase), the judge on the
+    control cases (right both times) and the runner on them (any answer)."""
+    if "Generate exactly" in prompt:
+        phrase = prompt.rsplit('"', 2)[-2]
+        return json.dumps([{"rule": "r", "scenario": f"a scenario about {phrase}", "tension": "t", "category": "c"}])
+    if "COMPLY" in prompt:
+        return json.dumps({"verdict": "COMPLY" if "same language" in prompt else "VIOLATE", "reason": "ok"})
+    return "Sure."
+
+
+def test_the_benchmark_page_runs_every_rule_in_scope_and_keeps_the_run(client, monkeypatch, tmp_path):
+    """guards.benchmark.scope (the Benchmark page, operator 2026-11-04, the previous CLI's full benchmark since
+    2026-11-05): the rules under the chosen card selected by the seed, one scenario per rule generated once and
+    kept for the seed, the two control cases read by the judge, then each rule through the one-rule benchmark on
+    its kept scenario with the page's choices and its own switch to put back; every step reaches the topic under
+    the rule's id (the run's own notes under the scope id), each rule ends with its verdict, the page's end
+    carries the whole run, which is saved and listed newest first by guards.benchmark.runs and deleted by
+    guards.benchmark.flush; a rerun with the seed asks the generation model nothing."""
+    from synapptic import benchmark
+    from synapptic.dashboard import handlers
+    from synapptic.harness import add_rule, switch_rule
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr(benchmark, "BENCHMARKS_DIR", tmp_path / "benchmarks")   # boundary: filesystem - the saved runs and scenarios
+    add_rule("pytest-parallel", ["pytest"], "pytest runs with -n 4.", "")
+    add_rule("commit-only-on-order", ["commit"], "Commit only when told.", "")
+    add_rule("machine-only", ["docker"], "Tests run in containers.", "machine-be")   # under a directory: not Global
+    switch_rule("commit-only-on-order", True)
+    calls = []
+    monkeypatch.setattr(handlers.benchmark, "run_rule_benchmark", functools.partial(scope_stand_in, calls))   # boundary: llm and headless sessions
+    monkeypatch.setattr(benchmark, "call_llm", scope_model)   # boundary: llm - the generation model, the judge and the runner on the controls
+    choices = {"project": "", "limit": 10, "runs": 1, "runner_provider": "ollama", "runner_model": "gemma3:27b", "seed": 3, "temperature": 0.4}
+    with client.websocket_connect("/api/ws") as ws:
+        ws.receive_json()
+        ws.send_text(json.dumps({"type": "subscribe", "topic": "benchmark"}))
+        ws.send_text(json.dumps({"type": "subscribe", "topic": "guards"}))
+        ws.send_text(json.dumps({"type": "ping"}))
+        assert ws.receive_json() == {"type": "pong"}
+        started = request(ws, "s1", "guards.benchmark.scope", choices)
+        assert started["result"] == {"rule": "__scope__", "started": True, "running": True}
+        frames = [ws.receive_json()]
+        while frames[-1]["topic"] != "guards":
+            frames.append(ws.receive_json())
+        runs = request(ws, "s2", "guards.benchmark.runs")["result"]
+        request(ws, "s5", "guards.benchmark.scope", choices)   # the rerun: the same seed, the kept scenarios
+        while ws.receive_json()["topic"] != "guards":
+            pass
+        reruns = request(ws, "s6", "guards.benchmark.runs")["result"]
+        state = request(ws, "s7", "guards.benchmark.state", {"id": "__scope__"})["result"]
+        flushed = request(ws, "s3", "guards.benchmark.flush")["result"]
+        assert request(ws, "s4", "guards.benchmark.runs")["result"] == []
+    # the Global card's rules only, in the seed's order, each on its kept scenario, with the choices and its own switch
+    order = [rule["id"] for rule in benchmark.select_rules([{"id": "pytest-parallel"}, {"id": "commit-only-on-order"}], 10, 3)]
+    expected = {"pytest-parallel": ("ollama", "gemma3:27b", False, 1, "a scenario about pytest", 0.4),
+                "commit-only-on-order": ("ollama", "gemma3:27b", True, 1, "a scenario about commit", 0.4)}
+    assert calls[:2] == [(rule_id, *expected[rule_id]) for rule_id in order] and calls[2:] == calls[:2]
+    data = [f["data"] for f in frames if f["topic"] == "benchmark"]
+    notes = [d["message"] for d in data if d["rule"] == "__scope__" and d.get("kind") == "note"]
+    assert notes[:2] == [f"generating the scenario for {order[0]}", f"generating the scenario for {order[1]}"]
+    assert "control comply: ok" in notes and "control violate: ok" in notes
+    per_rule = [d["rule"] for d in data if d["rule"] != "__scope__"]
+    assert per_rule == [order[0], order[0], order[1], order[1]]
+    run = data[-1]["run"]
+    assert data[-1]["done"] is True and run["rules"] == 2 and run["stopped"] is False and run["project"] == ""
+    assert run["selected"] == order and run["controls"]["comply"] is True and run["controls"]["violate"] is True
+    assert [v["classification"] for v in run["verdicts"]] == ["effective" if rule_id == "pytest-parallel" else "redundant" for rule_id in order]
+    assert run["choices"]["runner_model"] == "gemma3:27b" and run["choices"]["seed"] == 3 and run["choices"]["temperature"] == 0.4
+    assert len(runs) == 1 and runs[0]["verdicts"] == run["verdicts"] and runs[0]["id"]
+    assert len(reruns) == 2 and flushed == {"flushed": 2}
+    # the rerun's state as a reloaded page reads it: the run's own notes once each (they were doubled, 2026-11-05)
+    kept = [e["message"] for e in state["events"] if e["rule"] == "__scope__" and e.get("kind") == "note"]
+    assert kept[:2] == ["reusing 2 cached scenario(s) for seed 3", "reading the judge on the two control cases"]
+    assert len(kept) == len(set(kept))
+
+
+def test_a_rule_says_where_it_came_from(client, monkeypatch, tmp_path):
+    """The Benchmark page lists the knowledge under test with its origin (operator 2026-11-05): a rule written
+    with `guards add` says hand; the store's own origins (synthesis, keyword) pass through as they are."""
+    from synapptic.harness import add_rule
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    add_rule("pytest-parallel", ["pytest"], "pytest runs with -n 4.", "")
+    with client.websocket_connect("/api/ws") as ws:
+        ws.receive_json()
+        rules = {rule["id"]: rule for rule in request(ws, "o1", "guards.list")["result"]["rules"]}
+    assert rules["pytest-parallel"]["origin"] == "hand"
 
 
 def test_a_restart_is_refused_while_a_benchmark_runs(client, monkeypatch):

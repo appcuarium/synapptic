@@ -33,8 +33,8 @@ const EMPTY_NUMBERS: GuardNumbers = { fires: 0, idle: 0, misses: 0, chars: 0, se
 // Providers on Settings: the chosen tile at full strength, the others low.
 const SELECTED_TILE_STRENGTH = 1;
 const UNSELECTED_TILE_STRENGTH = 0.15;
-const GLOBAL = '';
-const ALL = '__all__';   // the strip's All card: every rule on one page (operator, 2026-11-04)
+export const GLOBAL = '';
+export const ALL = '__all__';   // the strip's All card: every rule on one page (operator, 2026-11-04)
 
 export interface GuardsPageProps<R extends GuardRow> {
   rulesMethod?: string;                     // a method answering in guards.list's shape (default guards.list)
@@ -45,14 +45,14 @@ export interface GuardsPageProps<R extends GuardRow> {
   detailsLabel?: string;                    // the button that opens it (default "Events")
 }
 
-function appliesTo(rule: GuardRow, project: string): boolean {
+export function appliesTo(rule: GuardRow, project: string): boolean {
   if (project === ALL) return true;
   return project === GLOBAL ? rule.projects.length === 0 && !rule.where : rule.projects.includes(project);
 }
 
 // The scope under a guard's name as the strip names it (operator, 2026-11-05): the project's card label,
 // "Global" for a rule everywhere, "Core" for synapptic's own; a project the index does not know keeps its pattern.
-function scopeOf(rule: GuardRow): string {
+export function scopeOf(rule: GuardRow): string {
   if (rule.projects.length > 0) return rule.projects.map((p) => (p === '__core__' ? 'Core' : p)).join(', ');
   return rule.where ? `under ${rule.where}` : 'Global';
 }
@@ -60,7 +60,7 @@ function scopeOf(rule: GuardRow): string {
 // A rule's label wears its effectiveness (operator 2026-11-05): the rule-on colour of its latest benchmark
 // run (teal keeps the label's own fill), the outline alone for a rule never benchmarked or whose latest run
 // measured nothing.
-function labelTone(verdicts: RuleVerdict[]): 'amber' | 'rose' | 'outline' | undefined {
+export function labelTone(verdicts: RuleVerdict[]): 'amber' | 'rose' | 'outline' | undefined {
   const latest = verdicts[0];
   const band: Band = latest ? ruleOnBand(latest.with, latest.without) : 'none';
   return band === 'teal' ? undefined : band === 'none' ? 'outline' : band;
@@ -68,7 +68,7 @@ function labelTone(verdicts: RuleVerdict[]): 'amber' | 'rose' | 'outline' | unde
 
 // The strip of a rule's benchmark runs, Machine's autoperf iterations: one toggle per run, newest first,
 // the picked one in the accent; the picked run's numbers sit in the stats row and its scenario under it.
-const runToggleClasses =
+export const runToggleClasses =
   'h-8 shrink-0 px-3 rounded-md border border-line bg-transparent text-[13px] font-normal text-fg-subtle shadow-none ' +
   'data-[state=on]:border-primary data-[state=on]:text-primary data-[state=on]:bg-transparent hover:bg-control-hover';
 

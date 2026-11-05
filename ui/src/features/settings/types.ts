@@ -12,6 +12,7 @@ export interface DashboardConfig {
   include_headless_sessions?: boolean;
   write_rules: boolean;
   tuning: TuningLevel;   // how readily the guards' words change on their own
+  keyword?: string;      // the word that turns a prompt into a rule; absent without the core
   [key: string]: unknown;
 }
 
@@ -32,4 +33,5 @@ export interface ConfigPatch extends Record<string, unknown> {
   include_headless_sessions?: boolean;
   write_rules?: boolean;
   tuning?: TuningLevel;
+  keyword?: string;
 }

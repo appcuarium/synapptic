@@ -28,6 +28,7 @@ export interface GuardRow {
   anchor: string;
   why: string;
   projects: string[]; // the indexed projects it applies to; [] = everywhere (Global)
+  origin?: string;    // where the rule came from: synthesis, keyword (a RULE: prompt), hand
   benchmark?: RuleVerdict[];   // the rule's benchmark verdicts, newest first (guards.benchmark)
   benchmark_running?: boolean; // a run is in progress on the server (the page opens its box on load)
   numbers?: GuardNumbers;   // joined on the page from guards.numbers, which arrives after the list
@@ -89,7 +90,32 @@ export type BenchmarkChoices = {
   runner_model: string;      // the runner's model
   judge_provider: string;
   judge_model: string;
+  seed?: number;             // the Benchmark page: which rules, and the scenarios kept for them
+  refresh?: boolean;         // generate the scenarios again
+  temperature?: number;      // the runner's temperature
 };
+
+// The judge read on the two control cases, once per run (the previous CLI's calibration).
+export interface RunControls {
+  comply: boolean;
+  violate: boolean;
+  reasons: Record<string, string>;
+}
+
+// A run over a scope (the Benchmark page, the previous CLI's full benchmark): the rules picked by the seed,
+// each on its kept scenario through the one-rule benchmark, kept as a file and listed newest first
+// (guards.benchmark.runs).
+export interface ScopeRun {
+  id?: string;                 // the saved file's name (absent on the run just finished, until listed)
+  timestamp: string;
+  project: string;             // "" Global, "__all__" every rule, else a slug
+  choices: BenchmarkChoices & { limit: number };
+  rules: number;               // how many rules the seed picked
+  selected?: string[];         // their ids, in the run's order
+  controls?: RunControls | null;
+  verdicts: RuleVerdict[];     // in the rules' order
+  stopped: boolean;
+}
 
 export interface GuardNumbersList {
   days: number;

@@ -10,7 +10,6 @@ import asyncio
 import functools
 import json
 import re
-import subprocess
 import threading
 import time
 from pathlib import Path
@@ -19,6 +18,7 @@ from typing import Awaitable, Callable
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from synapptic import benchmark, harness, providers
+from synapptic.core import CoreMissing
 from synapptic.config import CLAUDE_PROJECTS_DIR
 from synapptic.dashboard import service
 from synapptic.dashboard.hub import Hub
@@ -35,15 +35,15 @@ CONFIG_TOPIC = "config"
 GUARDS_TOPIC = "guards"
 GUARD_CHANGES_SHOWN = 20
 API_KEY_HINT_LENGTH = 4
+KEYWORD_MAX_LENGTH = 16   # the word that turns a prompt into a rule: one word, this long at most
 SESSION_PAGE_SIZE = 100
 SESSION_PAGE_MAX = 500
 TOOL_SUMMARY_LENGTH = 160
-# A live session: open in a running Claude Code process (operator 2026-11-05: an idle session you sit in is
-# live), or its transcript was written in the last 5 minutes; and the SessionEnd hook has not reported it
+# A live session: its transcript was written in the last 5 minutes (operator 2026-11-05: activity, not an open
+# process; a process-based lookup was built that morning and taken out the same evening, since it guessed
+# the project's newest session for a title it could not match) and the SessionEnd hook has not reported it
 # ended (POST /api/session-ended).
 LIVE_WINDOW_SECONDS = 300
-CLAUDE_PROCESS = re.compile(r"^\s*(\d+)\s+(claude)(?:\s+(.*))?$")
-PROCESS_LIST_TIMEOUT = 5
 # The index columns the browser gets; file_path and project_dir stay on the server.
 PUBLIC_SESSION_FIELDS = ("session_id", "project", "title", "model", "first_timestamp", "last_timestamp",
                          "message_count", "turn_count", "file_size")
@@ -75,6 +75,16 @@ class ConfigPatch(BaseModel):
     include_headless_sessions: bool | None = None
     write_rules: bool | None = None
     tuning: str | None = None                      # the dial: off, conservative, normal, eager
+    keyword: str | None = Field(default=None, min_length=1, max_length=KEYWORD_MAX_LENGTH)   # the word that turns a prompt into a rule
+
+
+def rule_keyword() -> str | None:
+    """The word that turns a prompt into a rule, kept with the rules; None without the core (the page then
+    shows no field)."""
+    try:
+        return harness.keyword()
+    except (CoreMissing, harness.HarnessError):
+        return None
 
 
 def public_config(config: dict) -> dict:
@@ -85,6 +95,9 @@ def public_config(config: dict) -> dict:
     view["api_key_hint"] = key[-API_KEY_HINT_LENGTH:] if len(key) > API_KEY_HINT_LENGTH else ""
     view["write_rules"] = rules_enabled(config)   # explicit: the file leaves it out until switched off
     view["tuning"] = harness.tuning_level(config)  # explicit, for the same reason
+    keyword = rule_keyword()
+    if keyword is not None:
+        view["keyword"] = keyword
     return view
 
 
@@ -120,6 +133,11 @@ def update_config_file(patch: ConfigPatch) -> dict:
     projects (on) or takes them out (off), as `synapptic config rules on|off` does."""
     config = providers.load_config()
     updated = apply_patch(config, patch)
+    if patch.keyword is not None:
+        try:
+            harness.set_keyword(patch.keyword)   # kept with the rules, not in the file; refused before anything is saved
+        except (CoreMissing, harness.HarnessError) as exc:
+            raise MethodError(ErrorCode.INVALID_PARAMS, str(exc)) from exc
     providers.save_config(updated)
     if rules_enabled(updated) != rules_enabled(config):
         if rules_enabled(updated):
@@ -129,8 +147,17 @@ def update_config_file(patch: ConfigPatch) -> dict:
     return updated
 
 
+def config_view() -> dict:
+    """The config file as the browser sees it; on a worker thread, as the keyword comes from the rules' store."""
+    return public_config(providers.load_config())
+
+
+def updated_config_view(patch: ConfigPatch) -> dict:
+    return public_config(update_config_file(patch))
+
+
 async def config_get(params: dict, hub: Hub) -> dict:
-    return public_config(await asyncio.to_thread(providers.load_config))
+    return await asyncio.to_thread(config_view)
 
 
 async def config_update(params: dict, hub: Hub) -> dict:
@@ -138,7 +165,7 @@ async def config_update(params: dict, hub: Hub) -> dict:
         patch = ConfigPatch.model_validate(params)
     except ValidationError as exc:
         raise MethodError(ErrorCode.INVALID_PARAMS, exc.errors(include_url=False)[0]["msg"]) from exc
-    view = public_config(await asyncio.to_thread(update_config_file, patch))
+    view = await asyncio.to_thread(updated_config_view, patch)
     hub.publish(CONFIG_TOPIC, view)
     return view
 
@@ -238,74 +265,6 @@ def tail_for(path: Path) -> TranscriptTail:
     return tail
 
 
-def claude_processes() -> list[tuple[int, list[str]]]:
-    """The running Claude Code processes: (pid, the arguments after `claude`), from the process list."""
-    try:
-        listed = subprocess.run(["ps", "-axo", "pid=,command="], capture_output=True, text=True, timeout=PROCESS_LIST_TIMEOUT)
-    except (OSError, subprocess.SubprocessError):
-        return []
-    found = []
-    for line in listed.stdout.splitlines():
-        match = CLAUDE_PROCESS.match(line)
-        if match:
-            found.append((int(match.group(1)), (match.group(3) or "").split()))
-    return found
-
-
-def process_cwd(pid: int) -> str | None:
-    """The working directory of a process (lsof: the `cwd` descriptor's name)."""
-    try:
-        listed = subprocess.run(["lsof", "-a", "-p", str(pid), "-d", "cwd", "-F", "n"], capture_output=True, text=True,
-                                timeout=PROCESS_LIST_TIMEOUT)
-    except (OSError, subprocess.SubprocessError):
-        return None
-    for line in listed.stdout.splitlines():
-        if line.startswith("n"):
-            return line[1:]
-    return None
-
-
-def encoded_project_dir(cwd: str) -> str:
-    """Claude Code's directory name for a working directory: every character outside letters and digits a dash."""
-    return re.sub(r"[^A-Za-z0-9]", "-", cwd)
-
-
-# The open sessions are looked up at most every few seconds (one lsof per process; the list is polled).
-OPEN_SESSIONS_TTL_SECONDS = 10
-_open_sessions_cache: dict = {"at": 0.0, "ids": set()}
-
-
-def open_session_ids(store: SessionStore, processes: list[tuple[int, list[str]]] | None = None) -> set[str]:
-    """The sessions open in a running Claude Code process: the one `--resume <id>` names, the one `-r <title>`
-    names in the process's project, else the project's most recently written session (a fresh `claude`)."""
-    live_lookup = processes is None
-    if live_lookup:
-        if time.time() - _open_sessions_cache["at"] < OPEN_SESSIONS_TTL_SECONDS:
-            return set(_open_sessions_cache["ids"])
-        processes = claude_processes()
-    found = set()
-    for pid, args in processes or []:
-        cwd = process_cwd(pid)
-        if not cwd:
-            continue
-        candidates = store.get_sessions_in_dir(encoded_project_dir(cwd))
-        if not candidates:
-            continue
-        chosen = None
-        if "--resume" in args and args.index("--resume") + 1 < len(args):
-            wanted = args[args.index("--resume") + 1]
-            chosen = next((row for row in candidates if row["session_id"] == wanted), None)
-        elif "-r" in args:
-            title = " ".join(args[args.index("-r") + 1:]).strip()
-            chosen = next((row for row in candidates if (row["title"] or "").strip() == title), None) if title else None
-        if chosen is None:
-            chosen = candidates[0]
-        found.add(chosen["session_id"])
-    if live_lookup:
-        _open_sessions_cache.update(at=time.time(), ids=set(found))
-    return found
-
-
 def read_sessions(project: str | None) -> list[dict]:
     """The index, with every live session brought up to its transcript's latest line (new bytes only)."""
     store = open_index()
@@ -313,7 +272,7 @@ def read_sessions(project: str | None) -> list[dict]:
         recent = recent_transcripts(time.time())
         for path in recent:
             index_transcript(store, path)
-        live = ({path.stem for path in recent} | open_session_ids(store)) - store.get_ended_session_ids()
+        live = {path.stem for path in recent} - store.get_ended_session_ids()
         return [{**public_session(row), "live": row["session_id"] in live}
                 for row in store.get_indexed_sessions(project=project)]
     finally:
@@ -419,6 +378,9 @@ def benchmark_history(value) -> list:
     return [value] if isinstance(value, dict) else []
 
 
+RULE_BY_HAND = "hand"   # a rule's origin when the store records none: written with `guards add`
+
+
 def guard_view(rule: dict, numbers: dict | None) -> dict:
     """One rule as the browser shows it: the plain export's fields by their labels, plus its numbers. The
     patterns a rule listens for stay out of the page."""
@@ -433,6 +395,7 @@ def guard_view(rule: dict, numbers: dict | None) -> dict:
         "family": bool(family),
         "anchor": family.get("anchor") or "",
         "why": rule.get("why") or "",
+        "origin": rule.get("origin") or RULE_BY_HAND,   # where it came from: synthesis, keyword (a RULE: prompt), hand
         "benchmark": benchmark_history(rule.get("benchmark")),   # the rule's benchmark verdicts, newest first
         "numbers": {name: numbers[name] for name in EMPTY_NUMBERS} if numbers else dict(EMPTY_NUMBERS),
     }
@@ -683,6 +646,151 @@ async def guards_benchmark_running(params: dict, hub: Hub) -> dict:
     return {"rules": sorted(benchmark_jobs)}
 
 
+# The Benchmark page (operator 2026-11-04): the one-rule engine over every rule under the strip's card, with
+# the CLI's choices, one rule after another on one job. Its events go on the benchmark topic under each rule's
+# id (the rule's own box on Profile & Guards follows them too) and under SCOPE_JOB for the page.
+SCOPE_JOB = "__scope__"
+ALL_PROJECTS = "__all__"
+SCOPE_LIMIT_DEFAULT = 10
+SCOPE_LIMIT_MAX = 50
+SCOPE_SEED_MAX = 999_999
+SCOPE_TEMPERATURE_DEFAULT = 0.1   # the previous CLI's default for the runner
+
+
+class GuardBenchmarkScopeParams(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    project: str = Field(default="", max_length=256)              # "" Global, ALL_PROJECTS every rule, else a slug
+    limit: int = Field(default=SCOPE_LIMIT_DEFAULT, ge=1, le=SCOPE_LIMIT_MAX)   # the CLI's number of rules
+    runs: int = Field(default=benchmark.RULE_BENCHMARK_RUNS, ge=1, le=9)
+    runner_provider: str = Field(default="", max_length=64)
+    runner_model: str = Field(default="", max_length=128)
+    judge_provider: str = Field(default="", max_length=64)
+    judge_model: str = Field(default="", max_length=128)
+    seed: int = Field(default=0, ge=0, le=SCOPE_SEED_MAX)          # the CLI's --seed: which rules, and the scenarios kept for them
+    refresh: bool = False                                          # the CLI's --refresh: generate the scenarios again
+    temperature: float = Field(default=SCOPE_TEMPERATURE_DEFAULT, ge=0, le=2)   # the CLI's --temperature for the runner
+
+
+def rule_in_scope(rule: dict, project: str) -> bool:
+    """The page's own filter: the All card takes every rule, Global the rules with no directory, a project
+    the rules under it. Synapptic's own rules are never benchmarked here."""
+    if rule.get("core"):
+        return False
+    if project == ALL_PROJECTS:
+        return True
+    if project == "":
+        return not rule["projects"] and not rule["where"]
+    return project in rule["projects"]
+
+
+def scope_rules(project: str, limit: int) -> list[dict]:
+    return [rule for rule in read_guards()["rules"] if rule_in_scope(rule, project)][:limit]
+
+
+def run_scope_job(query: GuardBenchmarkScopeParams, report, cancel: threading.Event) -> dict:
+    """The job itself, in a worker thread, the previous CLI's full benchmark on the rules (operator 2026-11-05):
+    the rules in scope selected by the seed, one scenario per rule generated once and kept for that seed (so
+    both arms, every run and every rerun face the same cases), the two control cases read by the judge, then
+    each rule through the one-rule benchmark on its kept scenario with the page's choices (`report(rule id,
+    event)` hears every step, `report(rule id, {done, verdict})` each rule's end; the run's own notes come
+    under the scope id), the rule's own switch put back after it; stopped at the next rule when the user says so."""
+    config = providers.load_config()
+    judge_config = dict(config)
+    if query.judge_provider:
+        judge_config["provider"] = query.judge_provider
+    if query.judge_model:
+        judge_config["model"] = query.judge_model
+    provider = query.runner_provider or benchmark.RULE_RESPONDENT_PROVIDER
+    model = query.runner_model or benchmark.respondent_model(config, provider)
+    say = functools.partial(report, SCOPE_JOB)
+    rules = benchmark.select_rules(scope_rules(query.project, SCOPE_LIMIT_MAX), query.limit, query.seed)
+    scenarios = benchmark.rule_scenarios(rules, query.project, query.seed, config, refresh=query.refresh, progress=say, cancel=cancel)
+    controls = None
+    if not cancel.is_set():
+        say({"kind": "note", "message": "reading the judge on the two control cases"})
+        controls = benchmark.judge_controls(judge_config, benchmark.runner_for(provider, config, query.temperature), model,
+                                            benchmark_cwd(rules[0]["id"]) if rules else None, progress=say)
+    verdicts = []
+    for rule in rules:
+        if cancel.is_set():
+            break
+        rule_id = rule["id"]
+        if rule_id not in scenarios:
+            verdicts.append(benchmark.untestable_verdict(rule_id, "no scenario came back from the generation model"))
+            report(rule_id, {"done": True, "verdict": verdicts[-1]})
+            continue
+        benchmark_jobs[rule_id] = benchmark_jobs[SCOPE_JOB]   # the rule's box opens on Profile & Guards
+        benchmark_cancels[rule_id] = cancel
+        try:
+            verdict = benchmark.run_rule_benchmark(rule_id, config=config, judge_config=judge_config, runs=query.runs,
+                                                   temperature=query.temperature, cwd=benchmark_cwd(rule_id),
+                                                   progress=functools.partial(report, rule_id), scenario=scenarios[rule_id],
+                                                   model=query.runner_model or None, provider=query.runner_provider or None,
+                                                   cancel=cancel, was_off=rule["off"])
+        finally:
+            benchmark_jobs.pop(rule_id, None)
+            benchmark_cancels.pop(rule_id, None)
+        verdicts.append(verdict)
+        report(rule_id, {"done": True, "verdict": verdict})
+    run = {
+        "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "project": query.project,
+        "choices": query.model_dump(exclude={"project"}),
+        "rules": len(rules),
+        "selected": [rule["id"] for rule in rules],
+        "controls": controls,
+        "verdicts": verdicts,
+        "stopped": cancel.is_set(),
+    }
+    benchmark.save_scope_benchmark(run)
+    return run
+
+
+def publish_scope_progress(loop: asyncio.AbstractEventLoop, hub: Hub, rule_id: str, event: dict) -> None:
+    """A step of the scope job onto the topic under the rule's id, kept for the rule and for the page."""
+    shown = {"rule": rule_id, **event}
+    benchmark_events.setdefault(rule_id, []).append(shown)
+    if rule_id != SCOPE_JOB:   # the run's own notes are under the scope id already: once, not twice
+        benchmark_events.setdefault(SCOPE_JOB, []).append(shown)
+    loop.call_soon_threadsafe(hub.publish, BENCHMARK_TOPIC, shown)
+
+
+async def scope_job(query: GuardBenchmarkScopeParams, hub: Hub) -> None:
+    report = functools.partial(publish_scope_progress, asyncio.get_running_loop(), hub)
+    cancel = benchmark_cancels[SCOPE_JOB]
+    try:
+        run = await asyncio.to_thread(guarded, run_scope_job, query, report, cancel)
+        hub.publish(BENCHMARK_TOPIC, {"rule": SCOPE_JOB, "done": True, "run": run})
+        hub.publish(GUARDS_TOPIC, await asyncio.to_thread(guarded, read_guards))
+    except MethodError as failure:
+        hub.publish(BENCHMARK_TOPIC, {"rule": SCOPE_JOB, "error": failure.message})
+    except Exception as failure:  # noqa: BLE001 - the job must end on the topic whatever broke (the page waits on it)
+        hub.publish(BENCHMARK_TOPIC, {"rule": SCOPE_JOB, "error": f"{type(failure).__name__}: {failure}"})
+    finally:
+        benchmark_jobs.pop(SCOPE_JOB, None)
+        benchmark_cancels.pop(SCOPE_JOB, None)
+
+
+async def guards_benchmark_scope(params: dict, hub: Hub) -> dict:
+    query = validated(GuardBenchmarkScopeParams, params)
+    if SCOPE_JOB in benchmark_jobs:
+        return {"rule": SCOPE_JOB, "started": False, "running": True}
+    benchmark_cancels[SCOPE_JOB] = threading.Event()
+    benchmark_events[SCOPE_JOB] = []
+    benchmark_jobs[SCOPE_JOB] = asyncio.create_task(scope_job(query, hub))
+    return {"rule": SCOPE_JOB, "started": True, "running": True}
+
+
+async def guards_benchmark_runs(params: dict, hub: Hub) -> list[dict]:
+    """The saved scope runs, newest first."""
+    return await asyncio.to_thread(benchmark.list_scope_benchmarks)
+
+
+async def guards_benchmark_flush(params: dict, hub: Hub) -> dict:
+    """Delete the saved scope runs (the rules keep their own verdicts)."""
+    return {"flushed": await asyncio.to_thread(benchmark.flush_scope_benchmarks)}
+
+
 async def guards_benchmark_state(params: dict, hub: Hub) -> dict:
     """A rule's latest run as the page needs it after a reload: whether it is still running and every event
     so far (the topic carries the rest)."""
@@ -723,6 +831,9 @@ METHODS: dict[str, Method] = {
     "guards.benchmark.stop": guards_benchmark_stop,
     "guards.benchmark.state": guards_benchmark_state,
     "guards.benchmark.running": guards_benchmark_running,
+    "guards.benchmark.scope": guards_benchmark_scope,
+    "guards.benchmark.runs": guards_benchmark_runs,
+    "guards.benchmark.flush": guards_benchmark_flush,
     "profile.get": profile_get,
     "server.restart": server_restart,
 }

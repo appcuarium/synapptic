@@ -1262,6 +1262,14 @@ def api_reply(prompt: str, model: str, cwd: str | None, config: dict, temperatur
     return call_llm(prompt, config={**config, "model": model}, temperature=temperature), None
 
 
+def runner_for(provider: str, config: dict, temperature: float | None):
+    """The runner's answer function `(prompt, model, cwd) -> (reply, session id)`: a headless Claude Code session
+    with the user's hooks for the hooked runner, one provider call for any other."""
+    if provider == RULE_RESPONDENT_PROVIDER:
+        return functools.partial(headless_reply, tools=RULE_RESPONDENT_TOOLS)
+    return functools.partial(api_reply, config={**config, "provider": provider}, temperature=temperature)
+
+
 def generate_rule_scenario(rule_id: str, config: dict) -> dict | None:
     """One adversarial scenario for the rule, carrying one of its phrases, from the generation model."""
     core = require_core()
@@ -1272,10 +1280,118 @@ def generate_rule_scenario(rule_id: str, config: dict) -> dict | None:
     return cases[0] if cases else None
 
 
+# ----- a run over the rules (the Benchmark page, the previous CLI's full benchmark) -------------------------
+
+SCOPE_SCENARIOS = "scenarios"
+SCENARIO_FORMAT = 1
+CONTROL_COMPLY = "control_comply"
+CONTROL_VIOLATE = "control_violate"
+
+
+def select_rules(rules: list[dict], n: int, seed: int) -> list[dict]:
+    """The CLI's selection: the rules in scope shuffled by the seed, the first n. The same seed over the same
+    rules picks the same ones in the same order, so a rerun is comparable."""
+    picked = list(rules)
+    random.Random(seed).shuffle(picked)
+    return picked[:max(0, n)]
+
+
+def file_safe(name: str) -> str:
+    return re.sub(r"[^A-Za-z0-9_.-]+", "-", name).strip("-") or "global"
+
+
+def rules_hash(rule_ids) -> str:
+    return hashlib.sha256("\n".join(sorted(rule_ids)).encode()).hexdigest()[:12]
+
+
+def scenarios_path(scope: str, seed: int, model: str, rule_ids) -> "Path":
+    """Where a run's scenarios live: by scope, seed, generation model and rule set, as the CLI keyed its cache."""
+    return BENCHMARKS_DIR / SCOPE_SCENARIOS / f"{file_safe(scope)}_seed{seed}_{file_safe(model)}_{rules_hash(rule_ids)}.json"
+
+
+def load_scenarios(path) -> dict[str, dict]:
+    """The cached scenarios by rule id, or none when the file is missing or of an older shape."""
+    try:
+        with open(path) as f:
+            data = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if data.get("format_version") != SCENARIO_FORMAT:
+        return {}
+    return dict(data.get("scenarios") or {})
+
+
+def save_scenarios(path, cases: dict[str, dict], seed: int, model: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w") as f:
+        json.dump({"format_version": SCENARIO_FORMAT, "seed": seed, "model": model,
+                   "generated_at": datetime.now(timezone.utc).isoformat(), "scenarios": cases}, f, indent=2)
+
+
+def rule_scenarios(rules: list[dict], scope: str, seed: int, config: dict, refresh: bool = False,
+                   progress=None, cancel=None) -> dict[str, dict]:
+    """One scenario per rule for a run, by rule id: generated once per scope, seed, generation model and rule
+    set and kept under benchmarks/scenarios, so every run of both arms and every rerun with the same seed faces
+    the same cases (the CLI's cached test cases); `refresh` generates them again. A rule the model gave no
+    scenario for is left out (the run reports it untestable)."""
+    say = progress or (lambda event: None)
+    model = str(config.get("model") or "")
+    ids = [rule["id"] for rule in rules]
+    path = scenarios_path(scope, seed, model, ids)
+    cases = {} if refresh else load_scenarios(path)
+    missing = [rule for rule in rules if rule["id"] not in cases]
+    if cases and not missing:
+        say({"kind": "note", "message": f"reusing {len(cases)} cached scenario(s) for seed {seed}"})
+        return {rule_id: cases[rule_id] for rule_id in ids}
+    for rule in missing:
+        if cancel is not None and cancel.is_set():
+            break
+        say({"kind": "note", "message": f"generating the scenario for {rule['id']}"})
+        case = generate_rule_scenario(rule["id"], config)
+        if case:
+            cases[rule["id"]] = case
+    save_scenarios(path, cases, seed, model)
+    say({"kind": "note", "message": f"{len(cases)} scenario(s) kept for seed {seed}"})
+    return {rule_id: cases[rule_id] for rule_id in ids if rule_id in cases}
+
+
+def untestable_verdict(rule_id: str, reason: str) -> dict:
+    """The verdict of a rule the run could not test (no scenario came back): untestable, empty arms, the
+    reason where the scenario would be; not recorded with the rule, as nothing was measured."""
+    arm = {"passes": 0, "valid": 0, "reasons": [], "fired": 0, "replies": [], "score": "UNKNOWN", "ci_95": [0.0, 0.0]}
+    return {
+        "rule": rule_id, "scenario": reason, "tension": "", "runs": 0,
+        "respondent": {"provider": "", "model": ""}, "judge": {"provider": "", "model": ""},
+        "with": dict(arm), "without": dict(arm), "classification": "untestable", "fired": 0,
+        "judge_failures": 0, "response_failures": 0, "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+def judge_controls(judge_config: dict, respond, model: str, cwd: str | None, progress=None, temperature: float | None = 0) -> dict:
+    """The CLI's judge calibration, once per run: the runner answers the two control scenarios (no rule
+    involved) and the judge reads each against the control's own rule; the comply control must read as
+    complied, the violate control as violated. Returns {comply: bool, violate: bool, reasons: {name: reason}}."""
+    core = require_core()
+    say = progress or (lambda event: None)
+    expected = {CONTROL_COMPLY: "COMPLY", CONTROL_VIOLATE: "VIOLATE"}
+    found = {"comply": False, "violate": False, "reasons": {}}
+    for case in core.control_cases():
+        name = case.get("category", "")
+        if name not in expected:
+            continue
+        reply, _ = respond(case["scenario"], model, cwd)
+        verdict = judge_response(reply or "", case["rule"], judge_config, temperature=temperature) if reply else {"verdict": "UNKNOWN", "reason": "no reply"}
+        key = "comply" if name == CONTROL_COMPLY else "violate"
+        found[key] = verdict["verdict"] == expected[name]
+        found["reasons"][key] = verdict["reason"]
+        say({"kind": "note", "message": f"control {key}: {'ok' if found[key] else 'broken, the judge said ' + verdict['verdict']}"})
+    return found
+
+
 def run_rule_benchmark(rule_id: str, config: dict | None = None, judge_config: dict | None = None,
                        runs: int = RULE_BENCHMARK_RUNS, temperature: float | None = 0.1, cwd: str | None = None,
                        progress=None, respond=None, scenario: dict | None = None, model: str | None = None,
-                       cancel=None, provider: str | None = None) -> dict:
+                       cancel=None, provider: str | None = None, was_off: bool = False) -> dict:
     """The verdict on one rule: {rule, scenario, tension, runs, respondent, judge, with, without,
     classification, fired, timestamp}, recorded with the rule in the store and saved under the benchmarks
     directory. The runner is `provider` (Claude Code by default) with `model` or the configured one: a
@@ -1285,19 +1401,16 @@ def run_rule_benchmark(rule_id: str, config: dict | None = None, judge_config: d
     `respond(prompt, model, cwd)` -> (reply, session id) answers each arm (the default runs the runner);
     `progress(event)` hears every step: {kind: note, message} for a stage, {kind: scenario, scenario,
     tension}, {kind: reply, run, arm, session, fired, text} for each answer, {kind: judge, run, arm, score,
-    reason} for each verdict on it."""
+    reason} for each verdict on it. `was_off`: the rule's switch before the run; every arm puts it back."""
     core = require_core()
     config = config or load_config()
     judge_config = judge_config or config
     say = progress or (lambda event: None)
     provider = provider or RULE_RESPONDENT_PROVIDER
     hooked = provider == RULE_RESPONDENT_PROVIDER
-    if hooked:
-        answer = respond or functools.partial(headless_reply, tools=RULE_RESPONDENT_TOOLS)
-    else:
-        answer = respond or functools.partial(api_reply, config={**config, "provider": provider}, temperature=temperature)
+    answer = respond or runner_for(provider, config, temperature)
 
-    say({"kind": "note", "message": "generating the scenario"})
+    say({"kind": "note", "message": "generating the scenario" if scenario is None else "on the scenario kept for this run"})
     case = scenario or generate_rule_scenario(rule_id, config)
     if not case:
         raise ValueError(f"no scenario came back for {rule_id}")
@@ -1308,7 +1421,7 @@ def run_rule_benchmark(rule_id: str, config: dict | None = None, judge_config: d
     order_rng.shuffle(run_orders)
     state = {
         "rule": rule_id, "case": case, "model": model, "cwd": cwd, "runs": runs, "answer": answer, "say": say,
-        "hooked": hooked, "context": None if hooked else core.harness_rule_context(rule_id),
+        "hooked": hooked, "context": None if hooked else core.harness_rule_context(rule_id), "was_off": was_off, "provider": provider,
         "judge_config": judge_config, "judge_failures": 0, "response_failures": 0, "cancel": cancel,
         "with": {"passes": 0, "valid": 0, "reasons": [], "fired": 0, "replies": []},
         "without": {"passes": 0, "valid": 0, "reasons": [], "fired": 0, "replies": []},
@@ -1355,8 +1468,8 @@ def run_rule_benchmark(rule_id: str, config: dict | None = None, judge_config: d
 
 
 def _run_arm(state: dict, name: str, on: bool, run: int) -> None:
-    """One arm of one run. A hooked runner (Claude Code): the rule switched as the arm needs (and back on
-    whatever happens), the headless session's reply, whether the store saw the rule in that session. A runner
+    """One arm of one run. A hooked runner (Claude Code): the rule switched as the arm needs (and back to
+    what it was whatever happens), the headless session's reply, whether the store saw the rule in that session. A runner
     without hooks: the rule's text ahead of the scenario on the on arm, the bare scenario on the off arm. Then
     the judge's score."""
     core = require_core()
@@ -1372,14 +1485,15 @@ def _run_arm(state: dict, name: str, on: bool, run: int) -> None:
         try:
             reply, session = state["answer"](case["scenario"], state["model"], state["cwd"])
         finally:
-            core.harness_switch_rule(rule_id, False)
+            core.harness_switch_rule(rule_id, state["was_off"])
     else:
         prompt = f"{state['context']}\n\n{case['scenario']}" if on else case["scenario"]
         reply, session = state["answer"](prompt, state["model"], state["cwd"])
     arm = state[name]
     if not reply:
         state["response_failures"] += 1
-        say({"kind": "note", "run": run + 1, "arm": name, "message": "no reply came back"})
+        say({"kind": "note", "run": run + 1, "arm": name,
+             "message": f"no reply came back from {state['provider']} {state['model']} (the dashboard log has the provider's error)"})
         return
     fired = (bool(session) and core.harness_rule_fired(session, rule_id)) if state["hooked"] else on
     arm["fired"] += int(fired)
@@ -1405,3 +1519,47 @@ def save_rule_benchmark(verdict: dict):
     with open(path, "w") as f:
         json.dump(verdict, f, indent=2)
     return path
+
+
+# A run over a scope (the Benchmark page: every rule under a card, the CLI's choices): {timestamp, project,
+# choices, verdicts, stopped}, one file per run under benchmarks/runs/, listed newest first and flushed as
+# `synapptic benchmark --flush-results` cleared the old results. The rules' own verdicts stay with the rules.
+SCOPE_RUNS = "runs"
+
+
+def save_scope_benchmark(run: dict):
+    """The run as a file: runs/{timestamp}.json."""
+    target = BENCHMARKS_DIR / SCOPE_RUNS
+    target.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now(timezone.utc).strftime("%Y-%m-%d_%H%M%S")
+    path = target / f"{stamp}.json"
+    serial = 1
+    while path.exists():   # two runs inside one second (a rerun on kept scenarios is quick): the second keeps its own file
+        serial += 1
+        path = target / f"{stamp}-{serial}.json"
+    with open(path, "w") as f:
+        json.dump(run, f, indent=2)
+    return path
+
+
+def list_scope_benchmarks() -> list[dict]:
+    """Every saved run, newest first, each with its file's name as `id`."""
+    target = BENCHMARKS_DIR / SCOPE_RUNS
+    runs = []
+    for path in sorted(target.glob("*.json"), reverse=True) if target.exists() else []:
+        try:
+            with open(path) as f:
+                run = json.load(f)
+        except (OSError, json.JSONDecodeError):
+            continue
+        runs.append({"id": path.stem, **run})
+    return runs
+
+
+def flush_scope_benchmarks() -> int:
+    """Delete every saved run; how many went."""
+    target = BENCHMARKS_DIR / SCOPE_RUNS
+    paths = list(target.glob("*.json")) if target.exists() else []
+    for path in paths:
+        path.unlink()
+    return len(paths)

@@ -37,6 +37,19 @@ def test_the_tuning_dial_is_config_and_needs_no_core(tmp_path, monkeypatch):
     assert "Tuning:          eager" in runner.invoke(cli, ["config", "show"]).output
 
 
+def test_the_rule_keyword_is_the_users_and_lives_with_the_rules(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))   # boundary: the rules' store lives under a scratch HOME, never the user's
+    monkeypatch.setattr("synapptic.providers.CONFIG_PATH", tmp_path / "config.yaml")   # boundary: a scratch config file
+    runner = CliRunner()
+    assert runner.invoke(cli, ["config", "keyword"]).output == "Rule keyword: RULE:\n"
+    assert runner.invoke(cli, ["config", "keyword", "GUARD->"]).output == "Rule keyword: GUARD->\n"
+    assert runner.invoke(cli, ["config", "keyword"]).output == "Rule keyword: GUARD->\n"
+    assert runner.invoke(cli, ["config", "keyword", "two words"]).exit_code != 0
+    assert runner.invoke(cli, ["config", "keyword", "GUARD!"]).exit_code != 0   # a plain word, with : - -> or > at its end at most
+    assert "Rule keyword:    GUARD->" in runner.invoke(cli, ["config", "show"]).output
+    assert not (tmp_path / "config.yaml").exists()   # the word is kept with the rules, not in the config file
+
+
 def test_the_learning_step_says_when_the_core_is_missing(monkeypatch):
     # the SessionEnd hook runs `synapptic learn`; without the core it reports and exits clean, as ingest does
     monkeypatch.setattr(core_module, "core", None)

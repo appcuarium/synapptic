@@ -116,15 +116,6 @@ class SessionStore:
         ).fetchall()
         return [dict(r) for r in rows]
 
-    def get_sessions_in_dir(self, project_dir: str) -> list[dict]:
-        """The sessions indexed under one Claude Code project directory, most recently written first."""
-        rows = self._conn.execute(
-            """SELECT session_id, title, file_path, last_timestamp FROM session_index
-               WHERE project_dir = ? ORDER BY last_timestamp DESC""",
-            (project_dir,),
-        ).fetchall()
-        return [dict(r) for r in rows]
-
     def get_project_dirs(self) -> dict[str, tuple[str, str]]:
         """Each project's Claude Code project directory name and its most recent transcript's path."""
         rows = self._conn.execute(

@@ -271,6 +271,54 @@ def remove_rule(rule_id: str) -> bool:
     return _call(require_core().harness_remove_rule, rule_id)
 
 
+def keyword() -> str:
+    """The word that turns a prompt into a rule: a prompt starting with it writes a rule at once from the
+    sentence that follows (RULE: unless changed). It lives with the rules, not in the config file."""
+    return _call(require_core().harness_keyword)
+
+
+def set_keyword(word: str) -> str:
+    """Change the word (one word, no spaces). Returns it as stored."""
+    return _call(require_core().harness_set_keyword, word)
+
+
+KEYWORD_TEMPERATURE = 0.0   # reading a rule out of a message wants the model's most literal answer
+
+
+def model_answer(reply: str | None) -> dict:
+    """The JSON object in the model's reply, or {} when there is none."""
+    if not reply or "{" not in reply or "}" not in reply:
+        return {}
+    try:
+        found = json.loads(reply[reply.index("{"):reply.rindex("}") + 1])
+    except ValueError:
+        return {}
+    return found if isinstance(found, dict) else {}
+
+
+def distil_rule(request: dict) -> str:
+    """A prompt that carries the keyword: the configured model says which rule it states, in the user's words,
+    with the phrases a later prompt would carry and whether it is for every project; the core stores it.
+    Returns the note the agent is given (what was added, or why nothing was)."""
+    core = require_core()
+    config = load_config()
+    reply = call_llm(core.harness_keyword_prompt(request["prompt"]), config=config, temperature=KEYWORD_TEMPERATURE)
+    found = model_answer(reply)
+    if reply is None:
+        reason = f"no reply came back from {config.get('provider') or 'the provider'} (the dashboard log has the provider's error)"
+    elif not found:
+        reason = f"the answer of {config.get('provider') or 'the provider'} was not a rule"
+    else:
+        reason = ""
+    answer = {
+        "cwd": request["cwd"], "session_id": request["session_id"], "reason": reason,
+        "text": str(found.get("rule") or "").strip(),
+        "phrases": [phrase for phrase in (found.get("phrases") or []) if isinstance(phrase, str)],
+        "everywhere": bool(found.get("everywhere")),
+    }
+    return _call(core.harness_keyword_rule, json.dumps(answer))["note"]
+
+
 def switch_rule(rule_id: str, off: bool) -> bool:
     return _call(require_core().harness_switch_rule, rule_id, off)
 
