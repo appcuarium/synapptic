@@ -79,6 +79,7 @@ export interface BenchmarkEvent {
   reason?: string;
   done?: boolean;
   verdict?: RuleVerdict;
+  summary?: RunSummary;   // a rule's end on the Benchmark page: the closing summary over the rules done so far
   error?: string;
 }
 

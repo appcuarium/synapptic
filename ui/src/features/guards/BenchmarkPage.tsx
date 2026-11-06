@@ -10,12 +10,12 @@
 // printed); past runs as a strip, with a compare and a flush. Built on Profile & Guards (strip, headers,
 // blocks, label tones, runs toggles), the session browser's stat cells and the Settings fields.
 import { useQueryClient } from '@tanstack/react-query';
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { PageHeader } from '@/components/layout/PageHeader';
 import { NumberStepper, SettingRow, SettingSelect } from '@/components/machine/SettingsForm';
 import { TileLabel, tileLabelStyle } from '@/components/machine/TileLabel';
-import { TileStrip } from '@/components/machine/TileStrip';
+import { TileStrip, useDragScroll } from '@/components/machine/TileStrip';
 import { Button } from '@/components/ui/button';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
@@ -26,7 +26,7 @@ import { BenchmarkChoiceFields, BenchmarkLog, runnerNote } from './BenchmarkPane
 import { formatWhen } from './format';
 import { ALL, GLOBAL, appliesTo, labelTone, runToggleClasses, scopeOf } from './GuardsPage';
 import { type Band, ratioBand, ratioTone, ruleOnTone, verdictBand, verdictTone } from './tone';
-import type { BenchmarkChoices, GuardRow, GuardsList, RuleVerdict, RunControls, ScopeRun } from './types';
+import type { BenchmarkChoices, GuardRow, GuardsList, RuleVerdict, RunControls, RunSummary, ScopeRun } from './types';
 import { SCOPE_JOB, useScopeBenchmarkRun } from './useBenchmark';
 
 // The Settings page's button corners (template tokens for the rest).
@@ -69,6 +69,13 @@ function runName(run: ScopeRun, list: GuardsList | undefined): string {
 // slider cards and the rule labels"): the dark teal fill, the tiles' text for a label (the name line's 80%),
 // the saturated 400 shades for the verdict values as Machine's stats bar has them on its dark surface (operator:
 // "the verdict colors should be darker, not those washed colors"), the name line's shade for a zero.
+// the summary row before the first rule of a run is done (operator 2026-11-06: both rows visible and updating
+// while the benchmark runs): every number at zero until the first rule's end brings the real ones
+const EMPTY_SUMMARY: RunSummary = {
+  total: 0, testable: 0, effective: 0, redundant: 0, backfire: 0, ineffective: 0, untestable: 0, unclear: 0,
+  with_pass_rate: 0, without_pass_rate: 0, delta: 0, with_ci_95: [0, 0], without_ci_95: [0, 0],
+  judge_failures: 0, judge_calls: 0, control_comply: null, control_violate: null,
+};
 // both banner rows: the cells centred vertically, room above and below (operator 2026-11-06: "let it breathe")
 const BANNER_ROW = 'flex items-center justify-around px-1 sm:px-2 py-2 min-h-[52px] overflow-x-auto';
 const STRIP_LABEL = 'text-tile-fg/80';
@@ -216,9 +223,12 @@ export interface LiveRun { label: string; done: number; total: number; startedAt
 function PastRunsStrip({ runs, picked, onPick, list, running }: {
   runs: ScopeRun[]; picked: string; onPick: (id: string) => void; list: GuardsList | undefined; running?: LiveRun;
 }) {
+  // Machine's strip (strategy-analytics, 2026-11-06): the row takes the page's width and scrolls inside it (the
+  // toggle group's own w-fit grew it to its content, so there was nothing to scroll), dragged like the tiles
+  const { ref, wasDragged } = useDragScroll();
   return (
-    <ToggleGroup type="single" spacing={2} aria-label="Past runs" value={running ? LIVE_RUN : picked}
-      onValueChange={(value) => { if (value) onPick(value); }} className="flex justify-start overflow-x-auto strip-scroll">
+    <ToggleGroup ref={ref} type="single" spacing={2} aria-label="Past runs" value={running ? LIVE_RUN : picked}
+      onValueChange={(value) => { if (value && !wasDragged()) onPick(value); }} className="flex w-full justify-start overflow-x-auto strip-scroll">
       {running && (
         <ToggleGroupItem value={LIVE_RUN} className={runToggleClasses}>
           <span className="flex items-center gap-2">
@@ -263,6 +273,16 @@ export function BenchmarkPage() {
   const [startedAt, setStartedAt] = useState(0);  // when the run in flight started, for its card in the strip
   const [compare, setCompare] = useState('');     // another run's id to read beside the picked one
   const [confirmFlush, setConfirmFlush] = useState(false);
+  // a page reloaded mid-run takes the run's own choices (operator 2026-11-06: 17 rules picked, 10 shown after a
+  // reload): the form shows what runs, and the totals count the run's rules, not the form's default
+  useEffect(() => {
+    if (!bench.choices) return;
+    setLimit(bench.choices.limit);
+    setSeed(bench.choices.seed);
+    setTemperature(bench.choices.temperature);
+    setStartedAt(bench.startedAt);   // the running card's "since", not the epoch
+  }, [bench.choices, bench.startedAt]);
+  const runLimit = bench.choices?.limit ?? limit;
 
   if (guards.error) {
     return (
@@ -283,13 +303,15 @@ export function BenchmarkPage() {
   const saved = (runs.data ?? []).filter((run) => project === ALL || run.project === project);
   const shownRun: ScopeRun | null = bench.run ?? (saved.find((run) => run.id === picked) ?? saved[0] ?? null);
   const verdicts = bench.running ? bench.verdicts : shownRun?.verdicts ?? [];
+  // the closing summary: over the rules done so far while the run is in flight, the saved run's after
+  const summary: RunSummary | undefined = bench.running ? bench.summary ?? EMPTY_SUMMARY : shownRun?.summary;
   const compared = saved.some((run) => run.id === compare) ? compare : '';
   const otherRun = compared ? saved.find((run) => run.id === compared) : undefined;
   const otherByRule = new Map((otherRun?.verdicts ?? []).map((verdict) => [verdict.rule, verdict]));
   const counts = VERDICTS.map((name) => [name, verdicts.filter((verdict) => verdict.classification === name).length] as const);
   const failure = start.error ?? stop.error ?? flush.error ?? runs.error;
   const label = projectLabel(list, project);
-  const liveRun: LiveRun | undefined = bench.running ? { label, done: bench.verdicts.length, total: Math.min(limit, scoped.length), startedAt } : undefined;
+  const liveRun: LiveRun | undefined = bench.running ? { label, done: bench.verdicts.length, total: Math.min(runLimit, scoped.length), startedAt } : undefined;
   return (
     <section className="flex flex-col">
       <PageHeader title="Benchmark">
@@ -357,7 +379,7 @@ export function BenchmarkPage() {
               {/* the filled button (operator 2026-11-06: Run dark teal, as every filled button) */}
               <Button className={buttonClasses} disabled={bench.running || !choices || scoped.length === 0}
                 onClick={() => { if (choices) { setStartedAt(Date.now()); startBench(); start.mutate({ ...choices, project, limit, seed, temperature, refresh: regenerate }); } }}>
-                {bench.running ? `Running… ${bench.verdicts.length} of ${Math.min(limit, scoped.length)} done` : 'Run'}
+                {bench.running ? `Running… ${bench.verdicts.length} of ${Math.min(runLimit, scoped.length)} done` : 'Run'}
               </Button>
             </span>
           </div>
@@ -386,12 +408,12 @@ export function BenchmarkPage() {
             with how many rules are done of the run's */}
         {/* the stats rows on one surface in the cards' dark teal (operator 2026-11-06), a lighter teal line between
             the two rows, not the page's line */}
-        {(verdicts.length > 0 || bench.running || Boolean(shownRun?.summary)) && (
+        {(verdicts.length > 0 || bench.running || Boolean(summary)) && (
         <div style={tileLabelStyle}>
         {(verdicts.length > 0 || bench.running) && (
           <div className={BANNER_ROW}>
             {bench.running && (
-              <StatCell label="done" value={`${bench.verdicts.length}/${Math.min(limit, scoped.length)}`} valueClassName={STRIP_TEXT.teal} labelClassName={STRIP_LABEL}
+              <StatCell label="done" value={`${bench.verdicts.length}/${Math.min(runLimit, scoped.length)}`} valueClassName={STRIP_TEXT.teal} labelClassName={STRIP_LABEL}
                 sub="rules judged so far, of the rules in this run" />
             )}
             {counts.map(([name, count]) => (
@@ -403,21 +425,21 @@ export function BenchmarkPage() {
         {/* the previous CLI's closing lines (operator 2026-11-06), once the run is done: testable of total, the pass
             rates with the rule on and off (the 95% interval as the tooltip, from five testable rules), the net
             impact with the rules improved and regressed, the judge's failures over its calls and its model */}
-        {!bench.running && shownRun?.summary && (
-          <div className={cn(BANNER_ROW, (verdicts.length > 0) && 'border-t border-teal-700')}>
+        {summary && (
+          <div className={cn(BANNER_ROW, (verdicts.length > 0 || bench.running) && 'border-t border-teal-700')}>
             {/* testable, runner and judge are facts, not verdicts: the tiles' text (operator 2026-11-06) */}
-            <StatCell label="testable" value={`${shownRun.summary.testable}/${shownRun.summary.total}`} valueClassName={STRIP_PLAIN} labelClassName={STRIP_LABEL}
+            <StatCell label="testable" value={`${summary.testable}/${summary.total}`} valueClassName={STRIP_PLAIN} labelClassName={STRIP_LABEL}
               sub="rules the judge could read, of the rules in the run" />
-            <StatCell label="rule on" value={percent(shownRun.summary.with_pass_rate)} valueClassName={STRIP_TEXT[ratioBand(shownRun.summary.with_pass_rate, 1)]} labelClassName={STRIP_LABEL}
-              sub={`runs that complied with the rule on, over every judged run; ${interval(shownRun.summary.with_ci_95, shownRun.summary.testable)}`} />
-            <StatCell label="rule off" value={percent(shownRun.summary.without_pass_rate)} valueClassName={STRIP_TEXT[ratioBand(shownRun.summary.without_pass_rate, 1)]} labelClassName={STRIP_LABEL}
-              sub={`runs that complied with the rule off, over every judged run; ${interval(shownRun.summary.without_ci_95, shownRun.summary.testable)}`} />
-            <StatCell label="impact" value={`${shownRun.summary.delta >= 0 ? '+' : ''}${percent(shownRun.summary.delta)}`}
-              valueClassName={STRIP_TEXT[shownRun.summary.delta > 0 ? 'teal' : shownRun.summary.delta < 0 ? 'rose' : 'none']} labelClassName={STRIP_LABEL}
-              sub={`the rule on's hit rate less the rule off's; ${shownRun.summary.effective} rules improved, ${shownRun.summary.backfire} regressed`} />
-            <StatCell label="judge failures" value={String(shownRun.summary.judge_failures)}
-              valueClassName={STRIP_TEXT[healthBand(shownRun.summary.judge_failures)]} labelClassName={STRIP_LABEL}
-              sub={`of ${shownRun.summary.judge_calls} judge calls`} />
+            <StatCell label="rule on" value={percent(summary.with_pass_rate)} valueClassName={STRIP_TEXT[ratioBand(summary.with_pass_rate, 1)]} labelClassName={STRIP_LABEL}
+              sub={`runs that complied with the rule on, over every judged run; ${interval(summary.with_ci_95, summary.testable)}`} />
+            <StatCell label="rule off" value={percent(summary.without_pass_rate)} valueClassName={STRIP_TEXT[ratioBand(summary.without_pass_rate, 1)]} labelClassName={STRIP_LABEL}
+              sub={`runs that complied with the rule off, over every judged run; ${interval(summary.without_ci_95, summary.testable)}`} />
+            <StatCell label="impact" value={`${summary.delta >= 0 ? '+' : ''}${percent(summary.delta)}`}
+              valueClassName={STRIP_TEXT[summary.delta > 0 ? 'teal' : summary.delta < 0 ? 'rose' : 'none']} labelClassName={STRIP_LABEL}
+              sub={`the rule on's hit rate less the rule off's; ${summary.effective} rules improved, ${summary.backfire} regressed`} />
+            <StatCell label="judge failures" value={String(summary.judge_failures)}
+              valueClassName={STRIP_TEXT[healthBand(summary.judge_failures)]} labelClassName={STRIP_LABEL}
+              sub={`of ${summary.judge_calls} judge calls`} />
           </div>
         )}
         </div>

@@ -424,6 +424,58 @@ def test_the_benchmark_page_runs_every_rule_in_scope_and_keeps_the_run(client, m
     assert len(kept) == len(set(kept))
 
 
+def test_each_rules_end_carries_the_closing_summary_so_far(client, monkeypatch, tmp_path):
+    """Operator 2026-11-06 ("both rows in the stats should be visible and updating while benchmark is running"):
+    each rule's end on the Benchmark page carries the closing summary over the rules done so far, the same
+    numbers the saved run closes on once the last rule is in."""
+    from synapptic import benchmark
+    from synapptic.dashboard import handlers
+    from synapptic.harness import add_rule
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr(benchmark, "BENCHMARKS_DIR", tmp_path / "benchmarks")   # boundary: filesystem - the saved runs and scenarios
+    add_rule("pytest-parallel", ["pytest"], "pytest runs with -n 4.", "")
+    add_rule("commit-only-on-order", ["commit"], "Commit only when told.", "")
+    monkeypatch.setattr(handlers.benchmark, "run_rule_benchmark", functools.partial(scope_stand_in, []))   # boundary: llm and headless sessions
+    monkeypatch.setattr(benchmark, "call_llm", scope_model)   # boundary: llm - the generation model, the judge and the runner on the controls
+    with client.websocket_connect("/api/ws") as ws:
+        ws.receive_json()
+        ws.send_text(json.dumps({"type": "subscribe", "topic": "benchmark"}))
+        ws.send_text(json.dumps({"type": "subscribe", "topic": "guards"}))
+        request(ws, "s1", "guards.benchmark.scope", {"project": "", "limit": 10, "runs": 1, "runner_provider": "ollama", "runner_model": "gemma3:27b", "seed": 3})
+        frames = [ws.receive_json()]
+        while frames[-1]["topic"] != "guards":
+            frames.append(ws.receive_json())
+    data = [f["data"] for f in frames if f["topic"] == "benchmark"]
+    ends = [d for d in data if d["rule"] != "__scope__" and d.get("done")]
+    run = data[-1]["run"]
+    assert len(ends) == 2 and [end["summary"]["total"] for end in ends] == [1, 2]
+    assert [end["summary"]["effective"] for end in ends] == [1, 2] and ends[0]["summary"]["control_comply"] is True
+    assert ends[-1]["summary"] == run["summary"]
+
+
+def test_a_page_reloaded_mid_run_gets_the_runs_choices(client, monkeypatch):
+    """Operator 2026-11-06 ("I've set the rules to 17 on this run, on reload I see 10 in the form and stats"):
+    while the Benchmark page's run is in flight, guards.benchmark.state carries the choices it was started
+    with, so a reloaded page shows the run's rule count, seed and temperature, not the form's defaults; the
+    choices go with the job at its end."""
+    from synapptic.dashboard import handlers
+
+    monkeypatch.setitem(handlers.benchmark_jobs, "__scope__", object())   # a run still in flight
+    monkeypatch.setitem(handlers.benchmark_choices, "__scope__", {"project": "", "limit": 17, "runs": 3, "seed": 1337, "temperature": 0.1})
+    monkeypatch.setitem(handlers.benchmark_started, "__scope__", 1_800_000_000.0)   # when it started, for the running card's "since"
+    with client.websocket_connect("/api/ws") as ws:
+        ws.receive_json()
+        running = request(ws, "c1", "guards.benchmark.state", {"id": "__scope__"})["result"]
+        monkeypatch.delitem(handlers.benchmark_choices, "__scope__")   # the job's end takes its choices with it
+        monkeypatch.delitem(handlers.benchmark_started, "__scope__")
+        monkeypatch.delitem(handlers.benchmark_jobs, "__scope__")
+        over = request(ws, "c2", "guards.benchmark.state", {"id": "__scope__"})["result"]
+    assert running["running"] is True and running["choices"]["limit"] == 17 and running["choices"]["seed"] == 1337
+    assert running["started"] == 1_800_000_000.0
+    assert over["running"] is False and "choices" not in over and "started" not in over
+
+
 def test_a_rule_says_where_it_came_from(client, monkeypatch, tmp_path):
     """The Benchmark page lists the knowledge under test with its origin (operator 2026-11-05): a rule written
     with `guards add` says hand; the store's own origins (synthesis, keyword) pass through as they are."""

@@ -4,7 +4,7 @@
 // reloaded mid-run shows the run so far and keeps following it (operator 2026-11-05).
 import { useEffect, useState } from 'react';
 import { useWs } from '@/lib/ws/react';
-import type { BenchmarkEvent, RuleVerdict, ScopeRun } from './types';
+import type { BenchmarkChoices, BenchmarkEvent, RuleVerdict, RunSummary, ScopeRun } from './types';
 
 export const BENCHMARK_TOPIC = 'benchmark';
 // the Benchmark page's job on the server: its events come under each rule's id, its end under this one
@@ -21,7 +21,12 @@ interface BenchmarkState {
   rule: string;
   running: boolean;
   events: BenchmarkEvent[];
+  choices?: ScopeChoices;   // the Benchmark page's run while it runs: what it was started with
+  started?: number;         // and when, epoch seconds
 }
+
+// What the Benchmark page's run was started with (guards.benchmark.scope), back from the server after a reload.
+export type ScopeChoices = BenchmarkChoices & { project: string; limit: number; seed: number; temperature: number; refresh: boolean };
 
 const IDLE: BenchmarkRun = { running: false, events: [], verdict: null, error: '' };
 
@@ -64,11 +69,14 @@ export interface ScopeBenchmarkRun {
   running: boolean;
   events: BenchmarkEvent[];
   verdicts: RuleVerdict[];   // the rules done so far, in order
+  summary: RunSummary | null;   // the closing summary over the rules done so far (the last rule's end)
+  choices: ScopeChoices | null;   // what a run found in flight after a reload was started with (the page adopts them)
+  startedAt: number;              // and when, in milliseconds (0 until the server says)
   run: ScopeRun | null;
   error: string;
 }
 
-const SCOPE_IDLE: ScopeBenchmarkRun = { running: false, events: [], verdicts: [], run: null, error: '' };
+const SCOPE_IDLE: ScopeBenchmarkRun = { running: false, events: [], verdicts: [], summary: null, choices: null, startedAt: 0, run: null, error: '' };
 
 export function useScopeBenchmarkRun(onDone?: () => void): [ScopeBenchmarkRun, () => void] {
   const client = useWs();
@@ -91,7 +99,7 @@ export function useScopeBenchmarkRun(onDone?: () => void): [ScopeBenchmarkRun, (
       // a rule's event belongs to this run only while it runs (a rule's own button runs on the same topic)
       setRun((before) => {
         if (!before.running) return before;
-        if (event.done) return { ...before, verdicts: event.verdict ? [...before.verdicts, event.verdict] : before.verdicts };
+        if (event.done) return { ...before, verdicts: event.verdict ? [...before.verdicts, event.verdict] : before.verdicts, summary: event.summary ?? before.summary };
         if (event.error) return before;
         return { ...before, events: [...before.events, event] };
       });
@@ -104,10 +112,13 @@ export function useScopeBenchmarkRun(onDone?: () => void): [ScopeBenchmarkRun, (
         running: true,
         events: state.events.length >= before.events.length ? state.events.filter((e) => !e.done) : before.events,
         verdicts: state.events.filter((e) => e.done && e.verdict).map((e) => e.verdict as RuleVerdict),
+        summary: state.events.filter((e) => e.done && e.summary).map((e) => e.summary as RunSummary).at(-1) ?? null,
+        choices: state.choices ?? null,
+        startedAt: state.started ? state.started * 1000 : 0,
       }));
     }).catch(() => undefined);
     return () => { alive = false; unsubscribe(); };
   }, [client, onDone]);
-  const start = () => setRun({ running: true, events: [], verdicts: [], run: null, error: '' });
+  const start = () => setRun({ running: true, events: [], verdicts: [], summary: null, choices: null, startedAt: 0, run: null, error: '' });
   return [run, start];
 }

@@ -631,6 +631,8 @@ async def guards_undo(params: dict, hub: Hub) -> dict:
 BENCHMARK_TOPIC = "benchmark"
 benchmark_jobs: dict[str, asyncio.Task] = {}   # rule id -> the running job
 benchmark_cancels: dict[str, threading.Event] = {}   # rule id -> set by guards.benchmark.stop; the job stops at its next arm
+benchmark_choices: dict[str, dict] = {}   # job id -> the choices it runs on, for a page reloaded mid-run (operator 2026-11-06)
+benchmark_started: dict[str, float] = {}   # job id -> when it started (epoch seconds), for the reloaded page's running card
 # rule id -> the events of its latest run so far (a page opened or reloaded mid-run asks for them:
 # guards.benchmark.state), kept after the run ends until the next one starts
 benchmark_events: dict[str, list[dict]] = {}
@@ -776,13 +778,16 @@ def run_scope_job(query: GuardBenchmarkScopeParams, report, cancel: threading.Ev
         controls = benchmark.judge_controls(judge_config, benchmark.runner_for(provider, config, query.temperature), model,
                                             benchmark_cwd(rules[0]["id"]) if rules else None, progress=say)
     verdicts = []
+    # each rule's end carries the closing summary over the rules done so far (operator 2026-11-06: both stats
+    # rows visible and updating while the benchmark runs), the same numbers the saved run closes on
+    so_far = lambda: benchmark.scope_summary({"controls": controls, "verdicts": verdicts})
     for rule in rules:
         if cancel.is_set():
             break
         rule_id = rule["id"]
         if rule_id not in scenarios:
             verdicts.append(benchmark.untestable_verdict(rule_id, "no scenario came back from the generation model"))
-            report(rule_id, {"done": True, "verdict": verdicts[-1]})
+            report(rule_id, {"done": True, "verdict": verdicts[-1], "summary": so_far()})
             continue
         benchmark_jobs[rule_id] = benchmark_jobs[SCOPE_JOB]   # the rule's box opens on Profile & Guards
         benchmark_cancels[rule_id] = cancel
@@ -796,7 +801,7 @@ def run_scope_job(query: GuardBenchmarkScopeParams, report, cancel: threading.Ev
             benchmark_jobs.pop(rule_id, None)
             benchmark_cancels.pop(rule_id, None)
         verdicts.append(verdict)
-        report(rule_id, {"done": True, "verdict": verdict})
+        report(rule_id, {"done": True, "verdict": verdict, "summary": so_far()})
     run = {
         "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "project": query.project,
@@ -835,6 +840,8 @@ async def scope_job(query: GuardBenchmarkScopeParams, hub: Hub) -> None:
     finally:
         benchmark_jobs.pop(SCOPE_JOB, None)
         benchmark_cancels.pop(SCOPE_JOB, None)
+        benchmark_choices.pop(SCOPE_JOB, None)
+        benchmark_started.pop(SCOPE_JOB, None)
 
 
 async def guards_benchmark_scope(params: dict, hub: Hub) -> dict:
@@ -843,6 +850,8 @@ async def guards_benchmark_scope(params: dict, hub: Hub) -> dict:
         return {"rule": SCOPE_JOB, "started": False, "running": True}
     benchmark_cancels[SCOPE_JOB] = threading.Event()
     benchmark_events[SCOPE_JOB] = []
+    benchmark_choices[SCOPE_JOB] = query.model_dump()
+    benchmark_started[SCOPE_JOB] = time.time()
     benchmark_jobs[SCOPE_JOB] = asyncio.create_task(scope_job(query, hub))
     return {"rule": SCOPE_JOB, "started": True, "running": True}
 
@@ -864,9 +873,14 @@ async def guards_benchmark_flush_scenarios(params: dict, hub: Hub) -> dict:
 
 async def guards_benchmark_state(params: dict, hub: Hub) -> dict:
     """A rule's latest run as the page needs it after a reload: whether it is still running and every event
-    so far (the topic carries the rest)."""
+    so far (the topic carries the rest); the Benchmark page's run adds the choices it runs on while it runs
+    (operator 2026-11-06: 17 rules picked, 10 shown after a reload)."""
     query = validated(GuardBenchmarkStopParams, params)
-    return {"rule": query.id, "running": query.id in benchmark_jobs, "events": list(benchmark_events.get(query.id, []))}
+    state = {"rule": query.id, "running": query.id in benchmark_jobs, "events": list(benchmark_events.get(query.id, []))}
+    if query.id in benchmark_choices:
+        state["choices"] = benchmark_choices[query.id]
+        state["started"] = benchmark_started[query.id]
+    return state
 
 
 class GuardBenchmarkStopParams(BaseModel):

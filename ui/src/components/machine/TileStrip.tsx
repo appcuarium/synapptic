@@ -22,8 +22,9 @@ export interface Tile {
 const DRAG_THRESHOLD_PX = 3;
 
 // Click-and-drag scrolling (Machine's useDragScroll): listeners on the document, the element resolved at
-// event time, and a guard so a drag does not also click the tile under the pointer.
-function useDragScroll() {
+// event time, and a guard so a drag does not also click the tile under the pointer. Shared with the Benchmark
+// page's past runs strip (operator 2026-11-06: the strips scroll as Machine's do).
+export function useDragScroll() {
   const ref = useRef<HTMLDivElement>(null);
   const drag = useRef({ down: false, startX: 0, scrollLeft: 0, dragged: false });
   useEffect(() => {
