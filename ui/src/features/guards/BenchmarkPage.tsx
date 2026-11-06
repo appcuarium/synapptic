@@ -81,15 +81,14 @@ const BANNER_ROW = 'flex items-center justify-around px-1 sm:px-2 py-2 min-h-[52
 const STRIP_LABEL = 'text-tile-fg/80';
 // the values a step larger than the stat cell's own (operator 2026-11-06: "make the values text bigger")
 const STRIP_VALUE = 'text-base sm:text-2xl';
-const STRIP_PLAIN = cn('text-tile-fg', STRIP_VALUE);   // a fact (testable): the tiles' value text
 // measured on machine.dev/strategy-analytics (2026-11-06): values text-teal-400 and text-rose-400; amber is
 // not in its strip, its page uses text-amber-500
 const STRIP_TEXT: Record<Band, string> = {
   teal: cn('text-teal-400', STRIP_VALUE), amber: cn('text-amber-500', STRIP_VALUE), rose: cn('text-rose-400', STRIP_VALUE), none: cn('text-tile-fg/80', STRIP_VALUE),
 };
-// a verdict count's colour: its verdict's, plain at zero; untestable and stopped are the run's own health
-// (operator 2026-11-06, as judge failures): teal at zero, rose above
-const HEALTH_COUNTS = new Set(['untestable', 'stopped']);
+// a verdict count's colour: its verdict's, plain at zero; untestable, stopped and backfire are the run's own
+// health (operator 2026-11-06, as judge failures; "backfire 0 is still holding old color"): teal at zero, rose above
+const HEALTH_COUNTS = new Set(['untestable', 'stopped', 'backfire']);
 
 function healthBand(count: number): Band {
   return count > 0 ? 'rose' : 'teal';
@@ -427,9 +426,7 @@ export function BenchmarkPage() {
             impact with the rules improved and regressed, the judge's failures over its calls and its model */}
         {summary && (
           <div className={cn(BANNER_ROW, (verdicts.length > 0 || bench.running) && 'border-t border-teal-700')}>
-            {/* testable, runner and judge are facts, not verdicts: the tiles' text (operator 2026-11-06) */}
-            <StatCell label="testable" value={`${summary.testable}/${summary.total}`} valueClassName={STRIP_PLAIN} labelClassName={STRIP_LABEL}
-              sub="rules the judge could read, of the rules in the run" />
+            {/* no testable cell: the untestable count above says the same (operator 2026-11-06) */}
             <StatCell label="rule on" value={percent(summary.with_pass_rate)} valueClassName={STRIP_TEXT[ratioBand(summary.with_pass_rate, 1)]} labelClassName={STRIP_LABEL}
               sub={`runs that complied with the rule on, over every judged run; ${interval(summary.with_ci_95, summary.testable)}`} />
             <StatCell label="rule off" value={percent(summary.without_pass_rate)} valueClassName={STRIP_TEXT[ratioBand(summary.without_pass_rate, 1)]} labelClassName={STRIP_LABEL}

@@ -26,7 +26,7 @@ Memory for AI agents is usually sold as "persistent". Persistent is the wrong wo
 
 The brain does not persist anything. The proteins that hold a memory break down within days. A memory lasts because using it rebuilds it. Forgetting is the default; remembering is work the brain keeps doing.
 
-**Reinforced Synaptic Memory** gives an agent the same deal. What you keep doing is rebuilt and gets stronger. What you stop doing is left to fade. Nothing is deleted by hand, nothing is configured, and the agent does not meet you for the first time every morning.
+**Reinforced Synaptic Memory** gives an agent the same deal. What you keep doing is rebuilt and gets stronger. What you stop doing is left to fade. Nothing is deleted by hand, nothing is configured, and the agent does not run on notes written once and trusted forever.
 
 *Reinforced by use. Pruned by disuse.*
 
@@ -36,6 +36,8 @@ It keeps two things:
 - **The reflexes it learned the hard way.** The Guards: what your agent does and does not do for you, learned from your own sessions rather than written by you.
 
 And the loop has finally been closed. What your agent does with its memory feeds back into that memory, on its own, with nothing for you to approve. You keep an undo, and one dial: `synapptic config tuning` sets how readily the memory changes, from off to eager. The person in the middle gets to think about the code.
+
+The technical note: Gheață, S. (2026). *Reinforced Synaptic Memory: memory for AI agents that is rebuilt by use and pruned by disuse.* Zenodo. [doi.org/10.5281/zenodo.24009286](https://doi.org/10.5281/zenodo.24009286) · [ORCID 0009-0005-8327-0982](https://orcid.org/0009-0005-8327-0982)
 
 ## Get started
 
